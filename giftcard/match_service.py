@@ -34,7 +34,8 @@ POLL_S = int(os.getenv("RECLAMO_POLL_S", "10"))
 TIMEOUT_S = int(os.getenv("RECLAMO_TIMEOUT_S", "720"))
 MAX_POR_DISPOSITIVO = int(os.getenv("RECLAMOS_POR_DISPOSITIVO", "3"))
 MAX_POR_IP = int(os.getenv("RECLAMOS_POR_IP", "5"))
-GIFTCARD_MAX = int(os.getenv("GIFTCARD_MAX_BS", "1000000"))
+GIFTCARD_MAX_BS = float(os.getenv("GIFTCARD_MAX_BS", "10000"))
+GIFTCARD_MAX_BS_IP = float(os.getenv("GIFTCARD_MAX_BS_IP", "25000"))
 
 TERMINALES = {"EMITIDO", "NO_ENCONTRADO", "ERROR_GIFTCARD", "AMBIGUO", "BLOQUEADO"}
 
@@ -127,6 +128,37 @@ def _incr(scope: str, dia: str) -> None:
     )
     con.commit()
     con.close()
+
+
+# ------------------------------------------------------------------ tope Bs
+
+def _suma_emitida(scope_col: str, valor: str, dia: str) -> float:
+    con = _con()
+    row = con.execute(
+        f"SELECT COALESCE(SUM(monto_real),0) AS s FROM claims "
+        f"WHERE state='EMITIDO' AND {scope_col}=? AND created_at LIKE ?",
+        (valor, dia + "%"),
+    ).fetchone()
+    con.close()
+    return float(row["s"] or 0)
+
+
+def _tope_error(device_id: str, ip: str, monto: Optional[float]) -> Optional[str]:
+    """Revisa el tope Bs/dia POR USUARIO y POR IP antes de emitir.
+
+    Un valor <= 0 en la variable desactiva el tope. La tarjeta solo se emite
+    si lo ya emitido hoy + este monto no supera el tope.
+    """
+    dia = _now().strftime("%Y-%m-%d")
+    monto = monto or 0.0
+    if device_id and GIFTCARD_MAX_BS > 0:
+        if _suma_emitida("device_id", device_id, dia) + monto > GIFTCARD_MAX_BS:
+            return (f"Alcanzaste el limite de reembolsos del dia "
+                    f"({GIFTCARD_MAX_BS:.2f} Bs/usuario). Intenta manana.")
+    if ip and GIFTCARD_MAX_BS_IP > 0:
+        if _suma_emitida("ip", ip, dia) + monto > GIFTCARD_MAX_BS_IP:
+            return f"Limite de reembolsos del dia alcanzado desde esta conexion."
+    return None
 
 
 # ------------------------------------------------------------------ claims
@@ -362,6 +394,17 @@ def intento_match(claim_id: int) -> str:
     reservo = cur.rowcount == 1
     if not reservo:
         return "PENDIENTE"
+
+    err_tope = _tope_error(row["device_id"], row["ip"], v["monto"])
+    if err_tope:
+        con = _con()
+        con.execute(
+            "UPDATE claims SET state='BLOQUEADO', mensaje=?, updated_at=? WHERE id=?",
+            (err_tope, _now().isoformat(), claim_id),
+        )
+        con.commit()
+        con.close()
+        return "BLOQUEADO"
 
     try:
         codigo = emitir_giftcard({
