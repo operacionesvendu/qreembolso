@@ -43,10 +43,13 @@ Abrir `http://localhost:8502/q/10357` (el URL del QR apunta a `/q/{maquina_id}`)
 | `RECLAMO_TIMEOUT_S`       | `720`   | tiempo total de búsqueda antes de dar NO_ENCONTRADO |
 | `RECLAMOS_POR_DISPOSITIVO`| `3`     | tope de gift cards/día por dispositivo |
 | `RECLAMOS_POR_IP`         | `5`     | tope de gift cards/día por IP |
-| `GIFTCARD_URL`/`GIFTCARD_TOKEN` | — | endpoint de gift cards del negocio |
+| `GIFTCARD_URL`/`GIFTCARD_TOKEN` | — | endpoint propio de gift cards (si existe) |
+| `GIFTCARD_VENCE`        | `+365d` | vencimiento YYYY-MM-DD de las tarjetas emitidas por MCP |
 | `WHATSAPP_NUMBER`         | —       | número para el botón de soporte |
 
-Sin `GIFTCARD_URL` se emite un código `STUB-XXXX` para probar el flujo.
+La gift card se genera de verdad en el portal ePay mediante la tool MCP
+`crear_gift_card` (usa `EPAY_MCP_TOKEN`, no requiere configurar nada extra).
+Solo si el token no está presente se emite un código `STUB-XXXX` para pruebas.
 
 ## Generar los QRs por máquina
 
@@ -79,7 +82,7 @@ y `qrs/manifesto_qrs.csv` (codigo, maquina_id, nombre, url, archivo).
 - Venta reclamable **una sola vez** (columna `tx_key` UNIQUE, reserva atómica).
 - Varias compras idénticas en el mismo minuto → lanza `AMBIGUO` (no emite);
   con el monto confirmado por el usuario se desambigua.
-- Sin endpoint de gift cards → código `STUB-` (NO usar en producción).
+- Sin token MCP (o sin `GIFTCARD_URL`) → código `STUB-` (NO usar en producción).
 
 ## Producción
 
