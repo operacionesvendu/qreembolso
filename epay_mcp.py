@@ -1,8 +1,9 @@
 """
 epay_mcp.py -- EpayService: cliente robusto del MCP de ePay.uno.
 
-El MCP (https://mcp.datalusions.online/mcp) es la UNICA fuente de datos de
-máquinas, productos, planograma (canales), estatus e inventario bajo.
+El MCP (https://mcp-epayuno.tuvendu.com/mcp/epayuno-74f3688d61097548) es la
+UNICA fuente de datos de máquinas, productos, planograma (canales), estatus e
+inventario bajo.
 
 Protocolo (Streamable HTTP / MCP 2025-03-26):
   1. POST initialize  -> la respuesta trae el header `mcp-session-id`.
@@ -14,7 +15,7 @@ logging, y la normalización de los datos que devuelve el MCP (números con coma
 texto con mojibake cp1252, máquinas "V46-UCVCOM", etc.).
 
 Configuración (nunca versionar el token):
-  * EPAY_MCP_URL   (default https://mcp.datalusions.online/mcp)
+  * EPAY_MCP_URL   (default https://mcp-epayuno.tuvendu.com/mcp/epayuno-74f3688d61097548)
   * EPAY_MCP_TOKEN (en st.secrets en Streamlit Cloud, o variable de entorno)
   * EPAY_MCP_USER  + EPAY_MCP_PASS  (alternativa: Basic Auth a nuevos MCP)
   * EPAY_MACHINE_FILTER  prefijos de codigo de maquina, separados por coma.
@@ -43,7 +44,7 @@ import requests
 
 log = logging.getLogger("epay_mcp")
 
-DEFAULT_URL = "https://mcp.datalusions.online/mcp"
+DEFAULT_URL = "https://mcp-epayuno.tuvendu.com/mcp/epayuno-74f3688d61097548"
 PROTOCOL_VERSION = "2025-03-26"
 CLIENT = {"name": "vendu-dashboard", "version": "1.0"}
 TIMEOUT = (30, 300)  # (connect, read)

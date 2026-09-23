@@ -1,8 +1,8 @@
 """
 match_service.py -- Motor de reclamacion "la maquina no despacho".
 
-Verifica contra ePay que exista una VENTA real (detalle de ventas por
-transaccion) que coincida con lo que el usuario reclama: misma maquina,
+Verifica contra ePay que exista una VENTA real (cobros_maquina por maquina)
+que coincida con lo que el usuario reclama: misma maquina,
 mismo producto (MDB de la seleccion), dentro de una ventana de tiempo, y
 con claim unico (una venta solo se canjea UNA vez).
 
@@ -265,40 +265,56 @@ class MCPSync:
         return pg
 
 
+def _zona_caracas():
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("America/Caracas")
+    except Exception:
+        return timezone(-timedelta(hours=4))
+
+
+def _parse_ventana_dt(cadena: str) -> Optional[datetime]:
+    try:
+        local = datetime.strptime(cadena, "%Y-%m-%d %H:%M:%S").replace(tzinfo=_zona_caracas())
+        return local.astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
 def _mdb_de_referencia(ref: str) -> str:
     return (ref or "").split()[0].strip().lower() if (ref or "").split() else ""
 
 
 def _ventas_ventana(maquina_id: int, desde: datetime, hasta: datetime) -> List[Dict[str, Any]]:
-    """Detalle de ventas (transacciones) en la ventana, de ePay."""
+    """Cobros/transacciones de la maquina en la ventana, via cobros_maquina.
+
+    El MCP reporta los timestamps en hora Venezuela (UTC-4); aqui se convierten
+    a UTC para compararlos con el reloj del bot.
+    """
+    caracas = _zona_caracas()
     salida: List[Dict[str, Any]] = []
-    dia = desde
-    while dia.date() <= hasta.date():
-        f = dia.date().isoformat()
+    dj = desde.astimezone(caracas).date()
+    fin = hasta.astimezone(caracas).date()
+    while dj <= fin:
+        f = dj.isoformat()
         try:
             r = MCPSync.call(
-                "ventas_x_rango",
-                {"fecha_desde": f, "fecha_hasta": f, "maquina_id": maquina_id,
-                 "incluir_detalle": True},
+                "cobros_maquina",
+                {"maquina_id": str(maquina_id), "fecha_desde": f, "fecha_hasta": f},
             )
         except Exception:
             r = {}
-        for row in (r or {}).get("detalle") or []:
-            crudo = (row.get("Fecha / hora") or "").strip()
-            try:
-                dt = datetime.strptime(crudo, "%d-%m-%Y %H:%M").replace(tzinfo=timezone.utc)
-            except ValueError:
+        for fila in (r or {}).get("cobros") or []:
+            dt = _parse_ventana_dt(fila.get("fecha") or "")
+            if not dt or dt < desde or dt > hasta:
                 continue
-            if dt < desde or dt > hasta:
-                continue
-            monto = _float(row.get("Monto"))
             salida.append({
                 "dt": dt,
-                "mdb": _mdb_de_referencia(row.get("Referencia") or ""),
-                "producto": " ".join((row.get("Referencia") or "").split()[1:]),
-                "monto": monto,
+                "mdb": _mdb_de_referencia(fila.get("respuesta") or ""),
+                "producto": "",
+                "monto": _float(fila.get("monto")),
             })
-        dia += timedelta(days=1)
+        dj += timedelta(days=1)
     salida.sort(key=lambda v: v["dt"])
     return salida
 
