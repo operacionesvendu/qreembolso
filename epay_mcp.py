@@ -16,6 +16,7 @@ texto con mojibake cp1252, máquinas "V46-UCVCOM", etc.).
 Configuración (nunca versionar el token):
   * EPAY_MCP_URL   (default https://mcp.datalusions.online/mcp)
   * EPAY_MCP_TOKEN (en st.secrets en Streamlit Cloud, o variable de entorno)
+  * EPAY_MCP_USER  + EPAY_MCP_PASS  (alternativa: Basic Auth a nuevos MCP)
   * EPAY_MACHINE_FILTER  prefijos de codigo de maquina, separados por coma.
                           Ej: "V46-UCVCOM" -> solo las que empiecen así.
   * EPAY_ONLY_SNACKS     "1"/"true" -> filtra a maquinas de snacks (heurística).
@@ -119,11 +120,15 @@ class EpayMCP:
         url: Optional[str] = None,
         token: Optional[str] = None,
         *,
+        user: Optional[str] = None,
+        password: Optional[str] = None,
         timeout: tuple = TIMEOUT,
         retries: int = RETRIES,
     ):
         self.url = url or os.getenv("EPAY_MCP_URL") or DEFAULT_URL
         self.token = token or os.getenv("EPAY_MCP_TOKEN") or ""
+        self.user = user or os.getenv("EPAY_MCP_USER") or ""
+        self.password = password or os.getenv("EPAY_MCP_PASS") or ""
         if not self.token:
             # En Streamlit Cloud el token puede vivir en st.secrets
             try:
@@ -132,9 +137,9 @@ class EpayMCP:
                 self.token = st.secrets.get("EPAY_MCP_TOKEN", "")
             except Exception:
                 pass
-        if not self.token:
+        if not self.token and not (self.user and self.password):
             raise ValueError(
-                "Falta EPAY_MCP_TOKEN (variable de entorno o st.secrets). "
+                "Falta EPAY_MCP_TOKEN (o EPAY_MCP_USER + EPAY_MCP_PASS para Basic Auth). "
                 "La ePay la proporciona el operador; nunca commitearla."
             )
         self.timeout = timeout
@@ -145,11 +150,18 @@ class EpayMCP:
     # ------------------------------------------------------------------ sesión
 
     def _base_headers(self) -> Dict[str, str]:
-        return {
-            "x-epay-token": self.token,
+        h: Dict[str, str] = {
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
         }
+        if self.token:
+            h["x-epay-token"] = self.token
+        if self.user and self.password:
+            import base64
+
+            raw = f"{self.user}:{self.password}".encode("utf-8")
+            h["Authorization"] = "Basic " + base64.b64encode(raw).decode("ascii")
+        return h
 
     def _post(self, payload: dict, retries: Optional[int] = None) -> requests.Response:
         retries = self.retries if retries is None else retries
@@ -469,8 +481,12 @@ if __name__ == "__main__":
     import sys
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    token = os.getenv("EPAY_MCP_TOKEN", "")
-    mcp = EpayMCP(token=token or None).connect()
+    mcp = EpayMCP(
+        url=os.getenv("EPAY_MCP_URL", None),
+        token=os.getenv("EPAY_MCP_TOKEN", ""),
+        user=os.getenv("EPAY_MCP_USER", ""),
+        password=os.getenv("EPAY_MCP_PASS", ""),
+    ).connect()
     opcion = sys.argv[1] if len(sys.argv) > 1 else "maquinas"
     if opcion == "maquinas":
         for m in filtrar_maquinas(mcp.maquinas_definidas()):
