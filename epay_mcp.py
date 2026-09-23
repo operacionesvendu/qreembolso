@@ -192,11 +192,18 @@ class EpayMCP:
             },
             retries=1,
         )
+        if resp.status_code >= 400:
+            detalle = ""
+            try:
+                detalle = resp.json().get("error", {}).get("message", "")
+            except Exception:
+                detalle = resp.text[:200]
+            raise RuntimeError(f"MCP respondió HTTP {resp.status_code} en initialize: {detalle}")
         if not resp.headers:
             raise RuntimeError("MCP sin headers en initialize")
         self._sid = resp.headers.get("mcp-session-id")
         if not self._sid:
-            raise RuntimeError("MCP no devolvió mcp-session-id")
+            raise RuntimeError("MCP no devolvió mcp-session-id (¿token correcto?)")
         try:
             self._session.post(
                 self.url,
