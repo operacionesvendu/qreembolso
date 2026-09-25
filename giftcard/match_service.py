@@ -9,7 +9,8 @@ unico (un cobro solo se canjea UNA vez).
 Un cobro se considera valido solo si:
   * su monto es igual a la suma de precios (planograma) de los productos
     seleccionados (+- RECLAMO_TOLERANCIA_BS),
-  * si se reclama UN solo producto, su codigo MDB coincide con el cobro
+  * si se reclama UN solo producto, el MDB del cobro es uno de los slots
+    donde esta ese producto
     (con varios productos -compra de carrito- solo se exige el monto),
   * su timestamp cae dentro de [creacion del reclamo - ventana, ahora],
   * aun no ha sido reclamado por otro claim (tx_key UNIQUE),
@@ -72,6 +73,11 @@ else:
     T_CLAIMS, T_LIMITS, T_EMISIONES = "claims", "daily_limits", "emisiones"
 
 _DB_LOCK = threading.Lock()
+_EMITIENDO: set = set()           # claims con emision en curso en este proceso
+_EMITIENDO_LOCK = threading.Lock()
+# Una emision via MCP puede tardar hasta el read-timeout del cliente (300 s);
+# pasado esto, un claim con cobro reservado y sin EMITIDO se da por interrumpido.
+EMISION_MAX_S = int(os.getenv("GIFTCARD_EMISION_MAX_S", "360"))
 
 _SCHEMA_SQLITE = """
 CREATE TABLE IF NOT EXISTS claims (
@@ -281,21 +287,32 @@ def _tope_error(device_id: str, ip: str, monto: Optional[float]) -> Optional[str
 # ------------------------------------------------------------------ claims
 
 def productos_en_stock(maquina_id: int) -> Dict[str, Dict[str, Any]]:
-    """Productos con stock de la maquina, por MDB (seleccion), segun el planograma."""
+    """Productos con stock de la maquina segun el planograma.
+
+    Un mismo producto suele estar en varios slots (p. ej. F0, F2, F4, F6):
+    se agrupan por nombre + precio en una sola entrada, cuya clave es el MDB
+    del primer slot y `mdbs` trae todos. La persona no sabe de que slot salio
+    (o no salio) su compra, asi que cualquiera de ellos vale.
+    """
     pg = MCPSync.planograma(maquina_id)
     vistos: Dict[str, Dict[str, Any]] = {}
+    por_producto: Dict[tuple, str] = {}
     for slot in pg.get("slots", []):
         nombre = (slot.get("nombre") or "").strip()
         mdb = (slot.get("seleccion") or "").strip().lower()
         cant = slot.get("cantidad") or 0
         if not nombre or not mdb or cant <= 0:
             continue
-        vistos[mdb] = {
-            "mdb": mdb,
-            "nombre": nombre,
-            "precio_bs": round(slot.get("precio_bs") or 0, 2),
-            "stock": int(cant),
-        }
+        precio = round(slot.get("precio_bs") or 0, 2)
+        clave = (" ".join(nombre.lower().split()), precio)
+        if clave in por_producto:
+            item = vistos[por_producto[clave]]
+            if mdb not in item["mdbs"]:
+                item["mdbs"].append(mdb)
+            item["stock"] += int(cant)
+            continue
+        por_producto[clave] = mdb
+        vistos[mdb] = {"mdb": mdb, "mdbs": [mdb], "nombre": nombre, "precio_bs": precio, "stock": int(cant)}
     return vistos
 
 
@@ -327,7 +344,9 @@ def armar_pedido(maquina_id: int, pedido: List[tuple]) -> Dict[str, Any]:
     producto = ", ".join(
         stock[m]["nombre"] + (f" x{c}" if c > 1 else "") for m, c in sorted(cantidades.items())
     )
-    return {"ok": True, "mdb": ",".join(sorted(cantidades)), "producto": producto[:200], "monto": monto}
+    # mdb guardado: un grupo por producto (",") con todos sus slots ("|")
+    mdb = ",".join("|".join(stock[m]["mdbs"]) for m in sorted(cantidades))
+    return {"ok": True, "mdb": mdb, "producto": producto[:200], "monto": monto}
 
 
 def crear_reclamo(
@@ -548,7 +567,7 @@ def candidatas(claim_id: int) -> List[Dict[str, Any]]:
     row = _fila(claim_id)
     if not row or row["state"] != "PENDIENTE":
         return []
-    mdbs = {m for m in (row["mdb"] or "").strip().lower().split(",") if m}
+    grupos = [set(g.split("|")) for g in (row["mdb"] or "").strip().lower().split(",") if g]
     monto_obj = _float(row["monto"])
     if monto_obj is None:
         return []
@@ -558,7 +577,7 @@ def candidatas(claim_id: int) -> List[Dict[str, Any]]:
         caracas = _zona_caracas()
         log.info(
             "claim %s maq %s busca %.2f Bs mdb=%s | cobros en ventana: %s",
-            claim_id, row["maquina_id"], monto_obj, ",".join(sorted(mdbs)),
+            claim_id, row["maquina_id"], monto_obj, row["mdb"],
             [(f"{v['dt'].astimezone(caracas):%H:%M:%S}", v["mdb"], v["monto"], v["estado"]) for v in vistas] or "ninguno",
         )
     ventas = [
@@ -566,7 +585,7 @@ def candidatas(claim_id: int) -> List[Dict[str, Any]]:
         if v["monto"] is not None
         and abs(v["monto"] - monto_obj) <= TOLERANCIA_BS
         and _estado_ok(v["estado"])
-        and (len(mdbs) != 1 or v["mdb"] in mdbs)
+        and (len(grupos) != 1 or v["mdb"] in grupos[0])
     ]
     if not ventas:
         return []
@@ -603,6 +622,11 @@ def intento_match(claim_id: int) -> str:
         return row["state"] if row else "NO_ENCONTRADO"
 
     if row["tx_key"]:
+        with _EMITIENDO_LOCK:
+            en_curso = claim_id in _EMITIENDO
+        reservado = _as_dt(row["updated_at"] or row["created_at"])
+        if en_curso or (_now() - reservado).total_seconds() < EMISION_MAX_S:
+            return "PENDIENTE"  # otra consulta esta emitiendo esta tarjeta
         # Se reservo un cobro pero el proceso murio antes de terminar la emision:
         # no se sabe si la tarjeta llego a crearse. Lo revisa un operador.
         _marcar(claim_id, "ERROR_GIFTCARD",
@@ -636,7 +660,16 @@ def intento_match(claim_id: int) -> str:
         reservo = False
     if not reservo:
         return "PENDIENTE"
+    with _EMITIENDO_LOCK:
+        _EMITIENDO.add(claim_id)
+    try:
+        return _emitir_reservado(claim_id, row, v, key)
+    finally:
+        with _EMITIENDO_LOCK:
+            _EMITIENDO.discard(claim_id)
 
+
+def _emitir_reservado(claim_id: int, row: Dict[str, Any], v: Dict[str, Any], key: str) -> str:
     err_tope = _tope_error(row["device_id"], row["ip"], v["monto"])
     if err_tope:
         _marcar(claim_id, "BLOQUEADO", err_tope)
