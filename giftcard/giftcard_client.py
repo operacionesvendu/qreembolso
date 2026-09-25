@@ -16,7 +16,9 @@ EPAY_MCP_USER + EPAY_MCP_PASS).
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import secrets
 from datetime import date, timedelta
 from typing import Any, Dict
@@ -38,10 +40,31 @@ def _stub(contexto: Dict[str, Any]) -> str:
     return "STUB-" + secrets.token_hex(4).upper()
 
 
-def _fecha_vence() -> str:
-    if GIFTCARD_VENCE:
-        return GIFTCARD_VENCE[:10]
-    return (date.today() + timedelta(days=365)).isoformat()
+log = logging.getLogger("giftcard_client")
+
+
+def _fecha_vence(valor: str | None = None, hoy: date | None = None) -> str:
+    """Vencimiento YYYY-MM-DD (el MCP exige ese formato y una fecha futura).
+
+    GIFTCARD_VENCE acepta una fecha fija ("2027-12-31") o un plazo en días
+    ("+365d", "365", "+90"). Vacío o inválido -> hoy + 365 días.
+    """
+    v = (GIFTCARD_VENCE if valor is None else valor).strip()
+    hoy = hoy or date.today()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+        try:
+            fija = date.fromisoformat(v)
+            if fija > hoy:
+                return fija.isoformat()
+            log.warning("GIFTCARD_VENCE=%s ya pasó; se usa hoy + 365 días", v)
+        except ValueError:
+            log.warning("GIFTCARD_VENCE=%s no es una fecha válida; se usa hoy + 365 días", v)
+    elif v:
+        m = re.fullmatch(r"\+?\s*(\d{1,4})\s*d?", v, flags=re.IGNORECASE)
+        if m and int(m.group(1)) > 0:
+            return (hoy + timedelta(days=int(m.group(1)))).isoformat()
+        log.warning("GIFTCARD_VENCE=%r no se entiende; se usa hoy + 365 días", v)
+    return (hoy + timedelta(days=365)).isoformat()
 
 
 def _emitir_via_mcp(contexto: Dict[str, Any]) -> str:

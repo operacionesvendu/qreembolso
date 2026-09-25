@@ -79,7 +79,7 @@ pero se multiplican las consultas a ePay.) Tras un reinicio, los reclamos
 | `GIFTCARD_MAX_BS`         | `10000` | tope Bs/día reembolsados **por usuario** (device-id) |
 | `GIFTCARD_MAX_BS_IP`      | `25000` | tope Bs/día reembolsados **por IP** |
 | `GIFTCARD_URL`/`GIFTCARD_TOKEN` | — | endpoint propio de gift cards (tiene prioridad sobre el MCP) |
-| `GIFTCARD_VENCE`          | `+365d` | vencimiento YYYY-MM-DD de las tarjetas emitidas por MCP |
+| `GIFTCARD_VENCE`          | hoy + 365 días | vencimiento de las tarjetas: fecha fija `YYYY-MM-DD` o plazo en días (`+365d`, `90`) |
 | `GIFTCARD_ALLOW_STUB`     | —       | `1` = sin credenciales emite `STUB-XXXX` (solo pruebas) |
 | `WHATSAPP_NUMBER`         | —       | número para el botón de soporte |
 | `ADMIN_TOKEN`             | —       | habilita `GET /api/admin/reclamos` |
