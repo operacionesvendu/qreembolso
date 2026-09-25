@@ -5,10 +5,13 @@ Orden de prioridad:
   1. GIFTCARD_URL (endpoint propio del negocio) si esta configurado.
   2. Tool MCP `crear_gift_card` (reportegift.php) con confirmar=true; genera
      la tarjeta directamente en el portal y devuelve el codigo nuevo.
-  3. Codigo local de emergencia STUB-... (marcado como stub, SOLO pruebas).
+  3. Codigo local STUB-... SOLO si GIFTCARD_ALLOW_STUB=1 (pruebas). Sin
+     credenciales y sin ese flag, la emision falla (-> ERROR_GIFTCARD) para
+     que nunca se entreguen codigos falsos en produccion.
 
 La emision via MCP usa la misma sesion/credenciales que el resto (MCPSync
-de match_service), asi que no se configura nada extra: solo EPAY_MCP_TOKEN.
+de match_service), asi que no se configura nada extra: EPAY_MCP_TOKEN (o
+EPAY_MCP_USER + EPAY_MCP_PASS).
 """
 
 from __future__ import annotations
@@ -23,6 +26,11 @@ import requests
 GIFTCARD_URL = os.getenv("GIFTCARD_URL", "").strip()
 GIFTCARD_TOKEN = os.getenv("GIFTCARD_TOKEN", "").strip()
 GIFTCARD_VENCE = os.getenv("GIFTCARD_VENCE", "").strip()
+GIFTCARD_ALLOW_STUB = os.getenv("GIFTCARD_ALLOW_STUB", "").strip().lower() in ("1", "true", "si", "yes")
+
+
+def _hay_credenciales_mcp() -> bool:
+    return bool(os.getenv("EPAY_MCP_TOKEN") or (os.getenv("EPAY_MCP_USER") and os.getenv("EPAY_MCP_PASS")))
 
 
 def _stub(contexto: Dict[str, Any]) -> str:
@@ -43,7 +51,8 @@ def _emitir_via_mcp(contexto: Dict[str, Any]) -> str:
     if not monto:
         raise RuntimeError("Monto de la venta no disponible para emitir gift card")
     res = MCPSync.call("crear_gift_card", {
-        "descripcion": f"Reembolso {contexto.get('producto') or 'QR'}",
+        "descripcion": f"Reembolso QR #{contexto.get('claim_id', '')} "
+                       f"maq {contexto.get('maquina_id', '')} {contexto.get('producto') or ''}".strip(),
         "monto": round(float(monto), 2),
         "vence": _fecha_vence(),
         "unico": True,
@@ -52,7 +61,8 @@ def _emitir_via_mcp(contexto: Dict[str, Any]) -> str:
     nuevas = (res or {}).get("gift_cards_nuevas") or []
     if not nuevas:
         raise RuntimeError(f"crear_gift_card no devolvio tarjeta: {res}")
-    codigo = str((nuevas[0].get("col_0") or "").strip())
+    t = nuevas[0]
+    codigo = str(t.get("col_0") or t.get("codigo") or t.get("Codigo") or "").strip()
     if not codigo:
         raise RuntimeError(f"Gift card sin codigo: {nuevas[0]}")
     return codigo
@@ -70,6 +80,8 @@ def emitir_giftcard(contexto: Dict[str, Any]) -> str:
         if not codigo:
             raise RuntimeError(f"Endpoint giftcard no devolvio codigo: {data}")
         return str(codigo)
-    if os.getenv("EPAY_MCP_TOKEN"):
+    if _hay_credenciales_mcp():
         return _emitir_via_mcp(contexto)
-    return _stub(contexto)
+    if GIFTCARD_ALLOW_STUB:
+        return _stub(contexto)
+    raise RuntimeError("Sin credenciales para emitir gift cards (EPAY_MCP_TOKEN o GIFTCARD_URL)")

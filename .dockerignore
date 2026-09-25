@@ -10,3 +10,5 @@ qrs/
 *.pid
 Dockerfile
 .dockerignore
+tests/
+.pytest_cache/

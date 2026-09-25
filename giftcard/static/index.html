@@ -2,8 +2,8 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Vendu</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vendu · Reclamo</title>
 <style>
   :root{
     --v: #1a5fb4; --v-d: #123e75; --ok: #26a269; --bad:#c01c28; --bg:#f2f4f8; --card:#fff;
@@ -43,7 +43,7 @@
 </head>
 <body>
 <header>
-  <h1>Escanea y reclamá</h1>
+  <h1>Escanea y reclama</h1>
   <p id="maquina-nombre">Cargando máquina…</p>
 </header>
 <main>
@@ -58,7 +58,7 @@
   <div class="card step" id="step-ayuda">
     <p style="margin-top:0"><b>Contacta a soporte</b></p>
     <p id="ayuda-maquina" style="font-size:13px"></p>
-    <button class="btn confirm" id="btn-wa" onclick="openWa()">3 Abrir WhatsApp / teléfono</button>
+    <button class="btn confirm" id="btn-wa" onclick="openWa()">Abrir WhatsApp</button>
     <button class="btn ghost" onclick="goIntro()">Volver</button>
   </div>
 
@@ -66,7 +66,7 @@
     <p style="margin-top:0"><b>Te ayudamos en 3 pasos</b></p>
     <p>1. Selecciona <b>el producto</b> que compraste (se muestra lo que tiene esta máquina ahora).</p>
     <p>2. Confirma el <b>monto</b> que pagaste.</p>
-    <p>3. Esperá unos segundos mientras <b>buscamos tu compra en la máquina</b>.</p>
+    <p>3. Espera unos segundos mientras <b>buscamos tu compra en la máquina</b>.</p>
     <button class="btn confirm" onclick="cargarProductos()">Continuar</button>
     <button class="btn ghost" onclick="goIntro()">Volver</button>
   </div>
@@ -90,13 +90,13 @@
     <div class="spin"></div>
     <p style="text-align:center;margin:4px 0"><b>Buscando tu compra…</b></p>
     <p class="nota" id="buscando-txt">Consultando la máquina cada pocos segundos. Esto puede tardar un momento.</p>
-    <button class="btn ghost" onclick="goIntro()">Cancelar</button>
+    <button class="btn ghost" onclick="cancelar()">Cancelar</button>
   </div>
 
   <div class="card step" id="step-resultado">
     <p style="margin-top:0" id="resultado-titulo"></p>
     <div id="resultado-body"></div>
-    <button class="btn ghost" onclick="goIntro()">Listo</button>
+    <button class="btn ghost" onclick="terminar()">Listo</button>
   </div>
 
 </main>
@@ -106,10 +106,22 @@
 const path = window.location.pathname;
 const m = /\/q\/(\d+)/.exec(path);
 const MAQUINA_ID = m ? parseInt(m[1],10) : 0;
+const LS_CLAIM = 'vendu_claim';
 
+function lsGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
+function lsSet(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
+function lsDel(k){ try{ localStorage.removeItem(k); }catch(e){} }
+
+let DEVICE_ID = null;
 function getDeviceId(){
-  let id = localStorage.getItem('vendu_device_id');
-  if(!id){ id = 'd' + crypto.randomUUID().replace(/-/g,''); localStorage.setItem('vendu_device_id', id); }
+  if(DEVICE_ID) return DEVICE_ID;
+  let id = lsGet('vendu_device_id');
+  if(!id){
+    const rnd = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now().toString(16)+Math.random().toString(16).slice(2));
+    id = 'd' + rnd.replace(/-/g,'').replace(/\./g,'');
+    lsSet('vendu_device_id', id);
+  }
+  DEVICE_ID = id;
   return id;
 }
 
@@ -119,15 +131,23 @@ function show(id){
   $(id).classList.add('active');
   window.scrollTo(0,0);
 }
-function toast(t){ const el=$('toast'); el.textContent=t; el.style.opacity=1; setTimeout(()=>el.style.opacity=0,2200); }
+function toast(t){ const el=$('toast'); el.textContent=t; el.style.opacity=1; setTimeout(()=>el.style.opacity=0,2600); }
+
+function errMsg(data, status){
+  const d = data && (data.error || data.detail);
+  if(typeof d === 'string') return d;
+  if(Array.isArray(d)) return 'Revisa los datos e intenta de nuevo.';
+  return 'Error '+status+'. Intenta de nuevo.';
+}
 
 function api(url, opts){
   opts = opts || {};
   opts.headers = opts.headers || {};
   opts.headers['X-Device-Id'] = getDeviceId();
+  if(opts.body) opts.headers['Content-Type'] = 'application/json';
   return fetch(url, opts).then(async r=>{
     const data = await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(data.error || data.detail || ('HTTP '+r.status));
+    if(!r.ok) throw new Error(errMsg(data, r.status));
     return data;
   });
 }
@@ -136,24 +156,24 @@ let SEL = null; // {mdb, nombre, precio_bs}
 let CLAIM_ID = null;
 let pollTimer = null;
 
-goIntro();
 function goIntro(){ SEL=null; CLAIM_ID=null; clearInterval(pollTimer); show('step-intro'); cargarMaquina(); }
 function goAyuda(){ show('step-ayuda'); api('/api/ayuda/'+MAQUINA_ID).then(d=>{
   $('ayuda-maquina').textContent = d.maquina ? 'Máquina: '+d.maquina : '';
-  $('btn-wa').textContent = d.whatsapp ? 'Abrir WhatsApp' : (d.telefono ? 'Llamar' : 'Soporte no disponible');
+  $('btn-wa').textContent = d.whatsapp ? 'Abrir WhatsApp' : 'Soporte no disponible';
 }).catch(()=>{}); }
-function openWa(){ api('/api/ayuda/'+MAQUINA_ID).then(d=>{ if(d.whatsapp) window.open(d.whatsapp,'_blank'); else toast('Estamos sin soporte en este momento'); }); }
+function openWa(){ api('/api/ayuda/'+MAQUINA_ID).then(d=>{ if(d.whatsapp) window.open(d.whatsapp,'_blank'); else toast('Estamos sin soporte en este momento'); }).catch(e=>toast(e.message)); }
 function goTutorial(){ show('step-tutorial'); }
 function goProductos(){ SEL=null; cargarProductos(); }
 
 function cargarMaquina(){
-  if(MAQUINA_ID<=0){ $('maquina-nombre').textContent='Escanéa el QR pegado en la máquina.'; return; }
+  if(MAQUINA_ID<=0){ $('maquina-nombre').textContent='Escanea el QR pegado en la máquina.'; return; }
   api('/api/maquina/'+MAQUINA_ID).then(d=>{
     $('maquina-nombre').textContent = d.nombre || ('Máquina '+MAQUINA_ID);
   }).catch(()=>{ $('maquina-nombre').textContent='Máquina '+MAQUINA_ID; });
 }
 
 function cargarProductos(){
+  if(MAQUINA_ID<=0){ toast('Escanea el QR pegado en la máquina'); goIntro(); return; }
   show('step-productos');
   const grid = $('lista-productos');
   grid.innerHTML = '<p class="nota">Cargando productos…</p>';
@@ -164,7 +184,7 @@ function cargarProductos(){
       const b = document.createElement('button');
       b.className='prod';
       b.innerHTML = '<b>'+esc(p.nombre)+'</b><span>Bs '+fmt(p.precio_bs)+'</span>';
-      b.onclick = ()=>{ SEL=p; $('producto-elegido').textContent=p.nombre; $('monto-input').value=fmt(p.precio_bs); show('step-confirmar'); };
+      b.onclick = ()=>{ SEL=p; $('producto-elegido').textContent=p.nombre; $('monto-input').value=fmt(p.precio_bs); $('btn-confirmar').disabled=false; show('step-confirmar'); };
       grid.appendChild(b);
     });
   }).catch(e=>{ grid.innerHTML='<p class="nota">'+esc(e.message)+'</p>'; });
@@ -174,47 +194,88 @@ function fmt(v){ if(v==null || isNaN(v)) return '0,00';
   return v.toLocaleString('es-VE',{minimumFractionDigits:2, maximumFractionDigits:2}); }
 function esc(s){ const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
 
+// "1.234,56" (es-VE) o "1234.56" -> 1234.56
+function parseMonto(txt){
+  let t = (txt||'').replace(/[^\d.,]/g,'');
+  if(t.indexOf(',')>=0){ t = t.replace(/\./g,'').replace(',', '.'); }
+  else if((t.match(/\./g)||[]).length>1){ t = t.replace(/\./g,''); }
+  return parseFloat(t);
+}
+
 function confirmar(){
-  const montoRaw = $('monto-input').value.replace(/,/g,'.').replace(/[^\d.]/g,'');
-  const monto = parseFloat(montoRaw);
+  const monto = parseMonto($('monto-input').value);
   if(!SEL){ toast('Elige un producto'); return; }
   if(isNaN(monto) || monto<=0){ toast('Escribe el monto que pagaste'); return; }
   $('btn-confirmar').disabled = true;
   api('/api/reclamo', {method:'POST', body: JSON.stringify({
     maquina_id: MAQUINA_ID, mdb: SEL.mdb, producto: SEL.nombre, monto: monto
   })}).then(d=>{
-    CLAIM_ID = d.claim_id;
-    show('step-buscando');
-    $('buscando-txt').textContent = 'Buscando '+SEL.nombre+' en la máquina '+MAQUINA_ID+'…';
-    poll();
-    pollTimer = setInterval(poll, 5000);
+    lsSet(LS_CLAIM, JSON.stringify({id:d.claim_id, maquina:MAQUINA_ID, producto:SEL.nombre, t:Date.now()}));
+    esperar(d.claim_id, SEL.nombre);
   }).catch(e=>{ $('btn-confirmar').disabled=false; toast(e.message); });
+}
+
+function esperar(claimId, producto){
+  CLAIM_ID = claimId;
+  show('step-buscando');
+  $('buscando-txt').textContent = 'Buscando '+(producto||'tu compra')+' en la máquina '+MAQUINA_ID+'…';
+  clearInterval(pollTimer);
+  poll();
+  pollTimer = setInterval(poll, 5000);
 }
 
 function poll(){
   if(!CLAIM_ID) return;
   api('/api/reclamo/'+CLAIM_ID).then(est=>{
     if(est.terminal){ clearInterval(pollTimer); mostrarResultado(est); }
-  }).catch(()=>{});
+  }).catch(e=>{
+    if(/inexistente/i.test(e.message)){ clearInterval(pollTimer); lsDel(LS_CLAIM); goIntro(); }
+  });
+}
+
+function cancelar(){
+  const id = CLAIM_ID;
+  clearInterval(pollTimer);
+  lsDel(LS_CLAIM);
+  if(id) api('/api/reclamo/'+id+'/cancelar', {method:'POST', body:'{}'}).catch(()=>{});
+  goIntro();
+}
+
+function terminar(){ lsDel(LS_CLAIM); goIntro(); }
+
+function cargarQr(){
+  fetch('/api/reclamo/'+CLAIM_ID+'/qr', {headers:{'X-Device-Id':getDeviceId()}})
+    .then(r=> r.ok ? r.blob() : null)
+    .then(b=>{ const img=$('qr-img'); if(b && img){ img.src = URL.createObjectURL(b); } })
+    .catch(()=>{});
 }
 
 function mostrarResultado(est){
   const t = $('resultado-titulo'), b = $('resultado-body');
+  if(est.state!=='EMITIDO') lsDel(LS_CLAIM);
   if(est.state==='EMITIDO'){
     t.innerHTML='<span class="ok">Tu compra fue confirmada</span>';
-    b.innerHTML = '<p class="nota">Presenta este código para reclamar tu producto.</p>'
-      + '<div class="qrbox"><img src="/api/reclamo/'+CLAIM_ID+'/qr" alt="QR"></div>'
+    b.innerHTML = '<p class="nota">Tu reembolso es una gift card'
+      + (est.monto_real ? ' por <b>Bs '+fmt(est.monto_real)+'</b>' : '')
+      + '. Úsala en cualquier máquina Vendu.</p>'
+      + '<div class="qrbox"><img id="qr-img" alt="QR de la gift card"></div>'
       + '<div class="mono">'+esc(est.gift_code)+'</div>'
       + '<button class="btn ghost" onclick="copiar()">Copiar código</button>'
-      + '<p class="nota">Código de uso único. Si no funciona, habla con un operador.</p>';
+      + '<p class="nota">Guarda este código (captura de pantalla). Es de uso único.</p>';
+    cargarQr();
   } else if(est.state==='NO_ENCONTRADO'){
     t.innerHTML='<span class="bad">No encontramos la compra</span>';
     b.innerHTML = '<p class="nota">'+esc(est.mensaje||'Intenta de nuevo en unos segundos o habla con un operador.')+'</p>'
       + '<button class="btn confirm" onclick="goTutorial()">Intentar de nuevo</button>'
       + '<button class="btn secondary" onclick="goAyuda()">Hablar con un humano</button>';
-  } else if(est.state==='AMBIGUO' || est.state==='ERROR_GIFTCARD'){
-    t.innerHTML='<span class="bad">'+(est.state==='AMBIGUO'?'Necesitamos más datos':'Hubo un problema')+'</span>';
-    b.innerHTML = '<p class="nota">'+esc(est.mensaje||'')+'</p><button class="btn secondary" onclick="goAyuda()">Hablar con un humano</button>';
+  } else if(est.state==='AMBIGUO' || est.state==='ERROR_GIFTCARD' || est.state==='BLOQUEADO'){
+    const titulos = {AMBIGUO:'Necesitamos más datos', ERROR_GIFTCARD:'Hubo un problema', BLOQUEADO:'Límite alcanzado'};
+    t.innerHTML='<span class="bad">'+titulos[est.state]+'</span>';
+    b.innerHTML = '<p class="nota">'+esc(est.mensaje||'')+'</p>'
+      + '<p class="nota">Número de reclamo: <b>#'+esc(String(est.claim_id))+'</b></p>'
+      + '<button class="btn secondary" onclick="goAyuda()">Hablar con un humano</button>';
+  } else if(est.state==='CANCELADO'){
+    goIntro(); return;
   } else {
     t.innerHTML='Estado'; b.innerHTML='<p class="nota">'+esc(est.state)+'</p>';
   }
@@ -228,6 +289,20 @@ function copiar(){
   if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(code).then(()=>toast('Código copiado')).catch(fallback); }
   else fallback();
 }
+
+// Al abrir: si hay un reclamo guardado de esta máquina (recarga, pestaña
+// cerrada), se retoma la búsqueda o se vuelve a mostrar el código emitido.
+(function iniciar(){
+  let guardado = null;
+  try{ guardado = JSON.parse(lsGet(LS_CLAIM)||'null'); }catch(e){}
+  if(guardado && guardado.id && guardado.maquina===MAQUINA_ID && Date.now()-guardado.t < 24*3600*1000){
+    cargarMaquina();
+    esperar(guardado.id, guardado.producto);
+    return;
+  }
+  lsDel(LS_CLAIM);
+  goIntro();
+})();
 </script>
 </body>
 </html>

@@ -1,5 +1,6 @@
-fastapi
+fastapi>=0.110
 uvicorn[standard]
 qrcode
 Pillow
 requests
+psycopg[binary]>=3.1
