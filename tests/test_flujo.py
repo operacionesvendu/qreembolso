@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 
 _TMP = tempfile.mkdtemp()
@@ -61,6 +62,7 @@ class FakeMCP:
                 {"nombre": "Doritos", "seleccion": "000b", "cantidad": 3, "precio_bs": 150.0},
                 {"nombre": "Agotado", "seleccion": "000c", "cantidad": 0, "precio_bs": 99.0},
                 {"nombre": "Coca-Cola", "seleccion": "000d", "cantidad": 5, "precio_bs": 120.5},
+                {"nombre": "Doritos", "seleccion": "000e", "cantidad": 2, "precio_bs": 150.0},
             ],
         }
 
@@ -120,6 +122,15 @@ def test_monto_distinto_no_coincide(fake):
     fake.cobro(monto=200.0)
     cid = _reclamo(_device())
     assert ms.intento_match(cid) == "PENDIENTE"
+
+
+def test_producto_en_varios_slots_se_agrupa(fake):
+    stock = ms.productos_en_stock(MAQ)
+    assert list(stock) == ["000b", "000d"]
+    assert stock["000b"]["mdbs"] == ["000b", "000e"] and stock["000b"]["stock"] == 5
+    fake.cobro(mdb="000e", monto=150.0)  # salio del otro slot de Doritos
+    cid = _reclamo(_device())
+    assert ms.intento_match(cid) == "EMITIDO"
 
 
 def test_un_producto_exige_mismo_mdb(fake):
@@ -206,8 +217,15 @@ def test_timeout_marca_no_encontrado(fake, monkeypatch):
 
 def test_emision_interrumpida_va_a_operador(fake):
     cid = _reclamo(_device())
-    ms._run("UPDATE claims SET tx_key='x' WHERE id=?", (cid,))
+    viejo = ms._ts(datetime.now(timezone.utc) - timedelta(seconds=ms.EMISION_MAX_S + 5))
+    ms._run("UPDATE claims SET tx_key='x', updated_at=? WHERE id=?", (viejo, cid))
     assert ms.intento_match(cid) == "ERROR_GIFTCARD"
+
+
+def test_emision_reciente_no_se_marca_interrumpida(fake):
+    cid = _reclamo(_device())
+    ms._run("UPDATE claims SET tx_key='x', updated_at=? WHERE id=?", (ms._ts(ms._now()), cid))
+    assert ms.intento_match(cid) == "PENDIENTE"
 
 
 def test_emision_via_mcp(fake, monkeypatch):
@@ -246,8 +264,12 @@ def test_api_flujo_completo(fake):
         assert r.json()["monto"] == 150.0
         cid = r.json()["claim_id"]
 
-        ms.intento_match(cid)
-        est = c.get(f"/api/reclamo/{cid}", headers=h).json()
+        ms.intento_match(cid)  # puede competir con la tarea de fondo: no debe romperla
+        for _ in range(50):
+            est = c.get(f"/api/reclamo/{cid}", headers=h).json()
+            if est["terminal"]:
+                break
+            time.sleep(0.1)
         assert est["state"] == "EMITIDO" and est["gift_code"]
 
         qr = c.get(f"/api/reclamo/{cid}/qr", headers=h)
