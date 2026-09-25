@@ -58,6 +58,9 @@ ESTADOS_REEMBOLSABLES = {
 }
 TOLERANCIA_BS = float(os.getenv("RECLAMO_TOLERANCIA_BS", "0.01"))
 MAX_ITEMS = int(os.getenv("RECLAMO_MAX_ITEMS", "10"))
+# Loguea en cada consulta los cobros vistos (hora, mdb, monto, estado) para
+# diagnosticar por que un reclamo no coincide. No incluye datos personales.
+LOG_COBROS = os.getenv("RECLAMO_LOG_COBROS", "1").strip().lower() in ("1", "true", "si", "yes")
 
 TERMINALES = {"EMITIDO", "NO_ENCONTRADO", "ERROR_GIFTCARD", "AMBIGUO", "BLOQUEADO", "CANCELADO"}
 
@@ -550,8 +553,16 @@ def candidatas(claim_id: int) -> List[Dict[str, Any]]:
     if monto_obj is None:
         return []
     desde = _as_dt(row["created_at"]) - timedelta(minutes=VENTANA_MIN)
+    vistas = _ventas_ventana(int(row["maquina_id"]), desde, _now())
+    if LOG_COBROS:
+        caracas = _zona_caracas()
+        log.info(
+            "claim %s maq %s busca %.2f Bs mdb=%s | cobros en ventana: %s",
+            claim_id, row["maquina_id"], monto_obj, ",".join(sorted(mdbs)),
+            [(f"{v['dt'].astimezone(caracas):%H:%M:%S}", v["mdb"], v["monto"], v["estado"]) for v in vistas] or "ninguno",
+        )
     ventas = [
-        v for v in _ventas_ventana(int(row["maquina_id"]), desde, _now())
+        v for v in vistas
         if v["monto"] is not None
         and abs(v["monto"] - monto_obj) <= TOLERANCIA_BS
         and _estado_ok(v["estado"])
