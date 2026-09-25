@@ -103,6 +103,16 @@
   .barra .btn{width:auto; margin:0; padding:14px 18px;}
   .link{border:0; background:none; color:var(--texto-inv); font-size:12px; text-decoration:underline; cursor:pointer; padding:0; margin-top:2px;}
 
+  /* ---------- selector de máquina ---------- */
+  .lista{display:flex; flex-direction:column; gap:8px; margin-bottom:6px;}
+  .maq{display:flex; align-items:center; gap:12px; background:var(--blanco); border:2px solid var(--linea); border-radius:14px;
+       padding:14px; color:var(--negro); text-decoration:none; font-weight:600; font-size:15px;}
+  .maq:active{border-color:var(--negro);}
+  .maq .cod{flex:none; min-width:48px; text-align:center; background:var(--negro); color:var(--amarillo); border-radius:8px;
+            padding:5px 8px; font-size:13px; font-weight:800; letter-spacing:.03em;}
+  .maq .nom{flex:1; min-width:0;}
+  .maq svg{flex:none; opacity:.5;}
+
   /* ---------- confirmar ---------- */
   .items{list-style:none; padding:0; margin:0;}
   .items li{display:flex; justify-content:space-between; gap:12px; padding:12px 0; border-bottom:1px dashed var(--linea); font-size:15px;}
@@ -156,6 +166,20 @@
 </header>
 
 <main>
+
+  <section class="step" id="step-elegir">
+    <h2>¿En qué máquina estás?</h2>
+    <p class="lead">Busca el lugar o el código que aparece en la máquina (por ejemplo, <b>V11</b>).</p>
+    <label class="buscar">
+      <svg width="20" height="20" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="buscar-maquina" type="search" placeholder="Buscar lugar o código" autocomplete="off" oninput="pintarMaquinas()">
+    </label>
+    <div class="lista" id="lista-maquinas"></div>
+    <button class="btn negro" onclick="goAyuda()">
+      <svg width="20" height="20" viewBox="0 0 24 24"><path d="M21 12a8.5 8.5 0 0 1-12.6 7.4L3 21l1.6-5.2A8.5 8.5 0 1 1 21 12z"/></svg>
+      <span>No encuentro mi máquina</span>
+    </button>
+  </section>
 
   <section class="step" id="step-intro">
     <div class="card">
@@ -322,7 +346,31 @@ let CLAIM_ID = null;
 let pollTimer = null, relojTimer = null, relojInicio = 0;
 const MAX_ITEMS = 10;
 
-function goIntro(){ CART={}; CLAIM_ID=null; clearInterval(pollTimer); clearInterval(relojTimer); show('step-intro'); cargarMaquina(); }
+function goIntro(){
+  CART={}; CLAIM_ID=null; clearInterval(pollTimer); clearInterval(relojTimer);
+  if(MAQUINA_ID<=0){ goElegir(); return; }
+  show('step-intro'); cargarMaquina();
+}
+
+// Entrada sin máquina (/reclamo, QR o Linktree compartido): la persona elige la suya.
+let MAQUINAS = null;
+function goElegir(){
+  $('maquina-nombre').textContent = 'Elige tu máquina para empezar';
+  show('step-elegir');
+  if(MAQUINAS){ pintarMaquinas(); return; }
+  $('lista-maquinas').innerHTML = '<p class="vacio">Cargando máquinas…</p>';
+  api('/api/maquinas').then(d=>{ MAQUINAS = d.maquinas || []; pintarMaquinas(); })
+    .catch(e=>{ $('lista-maquinas').innerHTML = '<p class="vacio">'+esc(e.message)+'</p>'; });
+}
+function pintarMaquinas(){
+  if(!MAQUINAS) return;
+  const q = normalizar($('buscar-maquina').value.trim());
+  const vis = MAQUINAS.filter(m=> !q || normalizar(m.codigo+' '+m.nombre).includes(q));
+  $('lista-maquinas').innerHTML = vis.length
+    ? vis.map(m=>'<a class="maq" href="/q/'+m.maquina_id+'"><span class="cod">'+esc(m.codigo)+'</span><span class="nom">'+esc(m.nombre)
+        +'</span><svg width="18" height="18" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></a>').join('')
+    : '<p class="vacio">No encontramos esa máquina. Revisa el código pegado en la máquina o habla con una persona.</p>';
+}
 function goAyuda(){ show('step-ayuda'); api('/api/ayuda/'+MAQUINA_ID).then(d=>{
   $('ayuda-maquina').textContent = MAQUINA.nombre ? 'Máquina: '+(MAQUINA.codigo ? MAQUINA.codigo+' · ' : '')+MAQUINA.nombre : '';
   $('btn-wa').querySelector('span').textContent = d.whatsapp ? 'Abrir WhatsApp' : 'Soporte no disponible';
@@ -339,7 +387,7 @@ function partirNombre(txt){
 }
 
 function cargarMaquina(){
-  if(MAQUINA_ID<=0){ $('maquina-nombre').textContent='Escanea el QR pegado en la máquina.'; return Promise.resolve(); }
+  if(MAQUINA_ID<=0){ $('maquina-nombre').textContent='Elige tu máquina para empezar'; return Promise.resolve(); }
   return api('/api/maquina/'+MAQUINA_ID).then(d=>{
     MAQUINA = partirNombre(d.nombre);
     $('maquina-nombre').textContent = MAQUINA.nombre || ('Máquina '+MAQUINA_ID);

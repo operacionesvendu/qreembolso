@@ -146,7 +146,7 @@ async def _tarea_poll(claim_id: int) -> None:
 
 @app.get("/")
 def home():
-    return RedirectResponse("/q/0")
+    return RedirectResponse("/reclamo")
 
 
 @app.get("/healthz")
@@ -154,6 +154,21 @@ def healthz():
     # emision: el token MCP puede crear gift cards (None = no se pudo consultar)
     return {"ok": True, "db": ms.backend(), "en_curso": len(_reclamos_en_curso),
             "emision": ms.MCPSync.puede_emitir()}
+
+
+@app.get("/reclamo")
+def pagina_selector():
+    """Entrada general (QR/Linktree compartido): la persona elige su máquina."""
+    return FileResponse(INDEX, headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/maquinas")
+def lista_maquinas():
+    try:
+        return {"maquinas": ms.maquinas_activas()}
+    except Exception as e:
+        log.warning("maquinas_definidas fallo: %s", e)
+        raise HTTPException(502, "No pudimos cargar las máquinas. Intenta de nuevo en unos segundos.")
 
 
 @app.get("/q/{maquina_id}")
@@ -231,14 +246,19 @@ def codigo_qr(claim_id: int, req: Request):
 @app.get("/api/ayuda/{maquina_id}")
 def ayuda(maquina_id: int):
     nombre = ""
-    try:
-        pg = ms.MCPSync.planograma(maquina_id)
-        nombre = pg.get("nombre") or ""
-    except Exception:
-        pass
+    if maquina_id > 0:
+        try:
+            pg = ms.MCPSync.planograma(maquina_id)
+            nombre = pg.get("nombre") or ""
+        except Exception:
+            pass
     link = ""
     if WHATSAPP:
-        texto = urllib.parse.quote(f"Maquina {maquina_id} ({nombre}): necesito ayuda con un reclamo.")
+        if maquina_id > 0:
+            texto = f"Máquina {maquina_id} ({nombre}): necesito ayuda con un reclamo."
+        else:
+            texto = "Hola, necesito ayuda con un reclamo en una máquina vendu."
+        texto = urllib.parse.quote(texto)
         link = f"https://wa.me/{WHATSAPP}?text={texto}"
     return {"maquina": nombre, "whatsapp": link, "telefono": WHATSAPP}
 
