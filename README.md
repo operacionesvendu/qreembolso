@@ -72,6 +72,7 @@ pero se multiplican las consultas a ePay.) Tras un reinicio, los reclamos
 | `RECLAMO_POLL_S`          | `10`    | cada cuánto se consulta ePay |
 | `RECLAMO_TIMEOUT_S`       | `720`   | tiempo total de búsqueda antes de dar NO_ENCONTRADO |
 | `RECLAMO_ESTADOS`         | `*`     | estados de `cobros_maquina` que se reembolsan (coma). `*` = cualquiera; `sin_despacho` = solo cobros sin venta |
+| `RECLAMO_SOLO_FALTANTE`   | `1`     | `1` = reembolsar cobrado − despachado; `0` = el cobro completo |
 | `RECLAMO_TOLERANCIA_BS`   | `0.01`  | diferencia máxima entre el cobro y la suma de los productos |
 | `RECLAMO_MAX_ITEMS`       | `10`    | máximo de productos por reclamo |
 | `RECLAMOS_POR_DISPOSITIVO`| `3`     | tope de reclamos/día por dispositivo |
@@ -118,8 +119,8 @@ y `qrs/manifesto_qrs.csv` (codigo, maquina_id, nombre, url, archivo).
 7. `EMITIDO` → se muestra el código + QR (sobrevive a recargar la página).
 8. Sin match en `RECLAMO_TIMEOUT_S` → `NO_ENCONTRADO` (reintenta o habla con soporte).
 
-Estados: `PENDIENTE`, `EMITIDO`, `NO_ENCONTRADO`, `AMBIGUO`, `BLOQUEADO`,
-`ERROR_GIFTCARD`, `CANCELADO`.
+Estados: `PENDIENTE`, `EMITIDO`, `ENTREGADO`, `NO_ENCONTRADO`, `AMBIGUO`,
+`BLOQUEADO`, `ERROR_GIFTCARD`, `CANCELADO`.
 
 ## API
 
@@ -134,6 +135,22 @@ Estados: `PENDIENTE`, `EMITIDO`, `NO_ENCONTRADO`, `AMBIGUO`, `BLOQUEADO`,
 | GET  | `/api/ayuda/{id}` | link de WhatsApp |
 | GET  | `/api/admin/reclamos?estado=ERROR_GIFTCARD` | listado para operadores (`Authorization: Bearer $ADMIN_TOKEN`) |
 | GET  | `/healthz` | healthcheck |
+
+## Cuánto se reembolsa
+
+Con `RECLAMO_SOLO_FALTANTE=1` (defecto) la gift card es por **lo cobrado menos lo
+que la máquina entregó**: el MCP asocia a cada cobro las ventas que la máquina
+registró (`ventas`, `monto_despachado`).
+
+| Cobro en `cobros_maquina` | Resultado |
+|---|---|
+| `sin_despacho` (no salió nada) | gift card por el total |
+| `parcial` (salió una parte) | gift card solo por lo que faltó, con la lista de productos faltantes |
+| `despachado` (salió todo) | no se emite: estado `ENTREGADO`, se deriva a una persona |
+
+Ejemplo real (V75 BDV 1): cobro Bs 4.920,06 = Trululu + 2 Iselitas; la máquina
+registró Trululu + 1 Iselitas (Bs 3.910,38) → gift card de Bs 1.009,68.
+Con `RECLAMO_SOLO_FALTANTE=0` se vuelve a reembolsar el cobro completo.
 
 ## Anti-fraude
 

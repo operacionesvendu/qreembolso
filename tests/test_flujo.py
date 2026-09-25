@@ -36,13 +36,16 @@ class FakeMCP:
         self.cobros: list[dict] = []
         self.emitidas: list[dict] = []
 
-    def cobro(self, mdb="000b", monto=150.0, estado="sin_despacho", hace_s=30):
+    def cobro(self, mdb="000b", monto=150.0, estado="sin_despacho", hace_s=30, entregados=()):
         dt = (datetime.now(timezone.utc) - timedelta(seconds=hace_s)).astimezone(CARACAS)
         self.cobros.append({
             "fecha": dt.strftime("%Y-%m-%d %H:%M:%S"),
             "respuesta": f"{mdb} OK",
             "monto": f"{monto:,.2f}",
             "estado": estado,
+            # ventas que el MCP asocia al cobro: (producto_id, monto)
+            "ventas": [{"producto": pid, "monto": m} for pid, m in entregados],
+            "monto_despachado": round(sum(m for _, m in entregados), 2),
         })
 
     def call(self, tool, args):
@@ -59,10 +62,10 @@ class FakeMCP:
             "maquina_id": maquina_id,
             "nombre": "V01 Prueba",
             "slots": [
-                {"nombre": "Doritos", "seleccion": "000b", "cantidad": 3, "precio_bs": 150.0},
-                {"nombre": "Agotado", "seleccion": "000c", "cantidad": 0, "precio_bs": 99.0},
-                {"nombre": "Coca-Cola", "seleccion": "000d", "cantidad": 5, "precio_bs": 120.5},
-                {"nombre": "Doritos", "seleccion": "000e", "cantidad": 2, "precio_bs": 150.0},
+                {"nombre": "Doritos", "seleccion": "000b", "cantidad": 3, "precio_bs": 150.0, "producto_id": 11},
+                {"nombre": "Agotado", "seleccion": "000c", "cantidad": 0, "precio_bs": 99.0, "producto_id": 12},
+                {"nombre": "Coca-Cola", "seleccion": "000d", "cantidad": 5, "precio_bs": 120.5, "producto_id": 13},
+                {"nombre": "Doritos", "seleccion": "000e", "cantidad": 2, "precio_bs": 150.0, "producto_id": 11},
             ],
         }
 
@@ -112,16 +115,53 @@ def test_emite_con_cobro_sin_despacho(fake):
     assert est["monto_real"] == 150.0
 
 
-def test_por_defecto_emite_aunque_figure_despachado(fake):
-    fake.cobro(estado="despachado")
+def test_despachado_completo_no_emite(fake):
+    fake.cobro(estado="despachado", entregados=[("11", 150.0)])
+    cid = _reclamo(_device())
+    assert ms.intento_match(cid) == "ENTREGADO"
+    est = ms.estado_reclamo(cid)
+    assert est["estado_cobro"] == "despachado" and not est["gift_code"]
+    assert "entregó todos" in est["mensaje"]
+    # el cobro queda tomado: otro reclamo no lo puede usar
+    assert ms.intento_match(_reclamo(_device(), ip="3.3.3.3")) == "PENDIENTE"
+
+
+def test_parcial_reembolsa_solo_lo_que_falto(fake):
+    # caso real V75 BDV 1: pagó 1 Doritos + 2 Coca-Cola, salió 1 Doritos + 1 Coca-Cola
+    fake.cobro(mdb="0", monto=391.0, estado="parcial", entregados=[("11", 150.0), ("13", 120.5)])
+    cid = _reclamo(_device(), pedido=(("000b", 1), ("000d", 2)))
+    assert ms.intento_match(cid) == "EMITIDO"
+    est = ms.estado_reclamo(cid)
+    assert est["monto_real"] == 120.5
+    assert "Coca-Cola" in est["mensaje"] and "Doritos" not in est["mensaje"]
+
+
+def test_sin_despacho_reembolsa_todo(fake):
+    fake.cobro()
     cid = _reclamo(_device())
     assert ms.intento_match(cid) == "EMITIDO"
-    assert ms.estado_reclamo(cid)["estado_cobro"] == "despachado"
+    est = ms.estado_reclamo(cid)
+    assert est["monto_real"] == 150.0 and "total" in est["mensaje"]
+
+
+def test_modo_cobro_completo(fake, monkeypatch):
+    monkeypatch.setattr(ms, "SOLO_FALTANTE", False)
+    fake.cobro(estado="despachado", entregados=[("11", 150.0)])
+    cid = _reclamo(_device())
+    assert ms.intento_match(cid) == "EMITIDO" and ms.estado_reclamo(cid)["monto_real"] == 150.0
+
+
+def test_faltantes_por_producto():
+    items = [{"nombre": "Trululu", "precio_bs": 2900.7, "cantidad": 1, "producto_ids": ["2022"]},
+             {"nombre": "Iselitas", "precio_bs": 1009.68, "cantidad": 2, "producto_ids": ["2019"]}]
+    assert ms.faltantes(items, ["2022", "2019"]) == [{**items[1], "cantidad": 1}]
+    assert ms.faltantes(items, []) == [items[0], items[1]]
+    assert ms.faltantes(items, ["2022", "2019", "2019"]) == []
 
 
 def test_estados_restringidos(fake, monkeypatch):
     monkeypatch.setattr(ms, "ESTADOS_REEMBOLSABLES", {"sin_despacho"})
-    fake.cobro(estado="despachado")
+    fake.cobro(estado="despachado", entregados=[("11", 150.0)])
     cid = _reclamo(_device())
     assert ms.intento_match(cid) == "PENDIENTE"
 

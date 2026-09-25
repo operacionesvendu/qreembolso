@@ -28,6 +28,7 @@ Almacen:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -65,7 +66,11 @@ PREFIJOS_SELECTOR = [p.strip().upper() for p in os.getenv("RECLAMO_PREFIJOS", "V
 # diagnosticar por que un reclamo no coincide. No incluye datos personales.
 LOG_COBROS = os.getenv("RECLAMO_LOG_COBROS", "1").strip().lower() in ("1", "true", "si", "yes")
 
-TERMINALES = {"EMITIDO", "NO_ENCONTRADO", "ERROR_GIFTCARD", "AMBIGUO", "BLOQUEADO", "CANCELADO"}
+TERMINALES = {"EMITIDO", "NO_ENCONTRADO", "ERROR_GIFTCARD", "AMBIGUO", "BLOQUEADO", "CANCELADO",
+              "ENTREGADO"}
+# Reembolsar solo lo que la máquina NO entregó (cobrado - despachado según las
+# ventas que el MCP cruza con cada cobro). "0" = reembolsar el cobro completo.
+SOLO_FALTANTE = os.getenv("RECLAMO_SOLO_FALTANTE", "1").strip().lower() not in ("0", "false", "no")
 
 if USE_PG:
     T_CLAIMS = f"{PG_SCHEMA}.giftcard_claims"
@@ -93,6 +98,7 @@ CREATE TABLE IF NOT EXISTS claims (
     ip          TEXT,
     tx_key      TEXT UNIQUE,
     estado_cobro TEXT,
+    items       TEXT,
     state       TEXT    NOT NULL DEFAULT 'PENDIENTE',
     gift_code   TEXT,
     mensaje     TEXT,
@@ -176,10 +182,11 @@ def init_db() -> None:
     with _DB_LOCK:
         con = sqlite3.connect(DB_PATH)
         con.executescript(_SCHEMA_SQLITE)
-        try:  # bases creadas antes de estado_cobro
-            con.execute("ALTER TABLE claims ADD COLUMN estado_cobro TEXT")
-        except sqlite3.OperationalError:
-            pass
+        for col in ("estado_cobro", "items"):  # bases creadas antes de esas columnas
+            try:
+                con.execute(f"ALTER TABLE claims ADD COLUMN {col} TEXT")
+            except sqlite3.OperationalError:
+                pass
         con.commit()
         con.close()
 
@@ -306,14 +313,18 @@ def productos_en_stock(maquina_id: int) -> Dict[str, Dict[str, Any]]:
             continue
         precio = round(slot.get("precio_bs") or 0, 2)
         clave = (" ".join(nombre.lower().split()), precio)
+        pid = str(slot.get("producto_id") or "").strip()
         if clave in por_producto:
             item = vistos[por_producto[clave]]
             if mdb not in item["mdbs"]:
                 item["mdbs"].append(mdb)
+            if pid and pid not in item["producto_ids"]:
+                item["producto_ids"].append(pid)
             item["stock"] += int(cant)
             continue
         por_producto[clave] = mdb
-        vistos[mdb] = {"mdb": mdb, "mdbs": [mdb], "nombre": nombre, "precio_bs": precio, "stock": int(cant)}
+        vistos[mdb] = {"mdb": mdb, "mdbs": [mdb], "producto_ids": [pid] if pid else [],
+                       "nombre": nombre, "precio_bs": precio, "stock": int(cant)}
     return vistos
 
 
@@ -347,7 +358,9 @@ def armar_pedido(maquina_id: int, pedido: List[tuple]) -> Dict[str, Any]:
     )
     # mdb guardado: un grupo por producto (",") con todos sus slots ("|")
     mdb = ",".join("|".join(stock[m]["mdbs"]) for m in sorted(cantidades))
-    return {"ok": True, "mdb": mdb, "producto": producto[:200], "monto": monto}
+    items = [{"nombre": stock[m]["nombre"], "precio_bs": stock[m]["precio_bs"], "cantidad": c,
+              "producto_ids": stock[m].get("producto_ids", [])} for m, c in sorted(cantidades.items())]
+    return {"ok": True, "mdb": mdb, "producto": producto[:200], "monto": monto, "items": items}
 
 
 def crear_reclamo(
@@ -367,9 +380,10 @@ def crear_reclamo(
         if bloqueo:
             return {"ok": False, "status": 429, "error": bloqueo}
         row = _one(
-            f"INSERT INTO {T_CLAIMS}(maquina_id, mdb, producto, monto, device_id, ip, created_at) "
-            "VALUES(?,?,?,?,?,?,?) RETURNING id",
-            (maquina_id, armado["mdb"], armado["producto"], armado["monto"], device_id, ip, _ts(_now())),
+            f"INSERT INTO {T_CLAIMS}(maquina_id, mdb, producto, monto, items, device_id, ip, created_at) "
+            "VALUES(?,?,?,?,?,?,?,?) RETURNING id",
+            (maquina_id, armado["mdb"], armado["producto"], armado["monto"],
+             json.dumps(armado.get("items") or [], ensure_ascii=False), device_id, ip, _ts(_now())),
         )
         claim_id = int(row["id"])
         dia = _dia()
@@ -630,6 +644,8 @@ def _ventas_ventana(maquina_id: int, desde: datetime, hasta: datetime) -> List[D
                 "producto": "",
                 "monto": _float(fila.get("monto")),
                 "estado": str(fila.get("estado") or "").strip().lower(),
+                "monto_despachado": _float(fila.get("monto_despachado")),
+                "entregados": [str(x.get("producto") or "") for x in (fila.get("ventas") or [])],
             })
         dj += timedelta(days=1)
     salida.sort(key=lambda v: v["dt"])
@@ -752,8 +768,61 @@ def intento_match(claim_id: int) -> str:
             _EMITIENDO.discard(claim_id)
 
 
+def faltantes(items: List[Dict[str, Any]], entregados: List[str]) -> List[Dict[str, Any]]:
+    """Productos del reclamo que la máquina no registró como vendidos en ese cobro."""
+    quedan = list(entregados)
+    salida = []
+    for it in items:
+        pids = set(it.get("producto_ids") or [])
+        faltan = 0
+        for _ in range(int(it.get("cantidad") or 0)):
+            hit = next((p for p in quedan if p in pids), None)
+            if hit is None:
+                faltan += 1
+            else:
+                quedan.remove(hit)
+        if faltan:
+            salida.append({**it, "cantidad": faltan})
+    return salida
+
+
+def _texto_items(items: List[Dict[str, Any]]) -> str:
+    return ", ".join(f"{i['nombre']}" + (f" ×{i['cantidad']}" if i["cantidad"] > 1 else "") for i in items)
+
+
+def monto_a_reembolsar(row: Dict[str, Any], v: Dict[str, Any]) -> tuple:
+    """(monto Bs, mensaje) del reembolso para el cobro v del reclamo row.
+
+    Manda el dinero: cobrado - despachado (las ventas que el MCP asocia al
+    cobro). Los productos faltantes se usan para explicarle a la persona qué
+    se le reembolsa.
+    """
+    cobrado = float(v["monto"])
+    if not SOLO_FALTANTE:
+        return cobrado, "Compra confirmada."
+    despachado = v.get("monto_despachado") or 0.0
+    monto = round(max(0.0, cobrado - despachado), 2)
+    try:
+        items = json.loads(row.get("items") or "[]")
+    except (TypeError, ValueError):
+        items = []
+    falta = faltantes(items, v.get("entregados") or []) if items else []
+    if monto <= TOLERANCIA_BS:
+        return 0.0, ("La máquina registra que entregó todos los productos de esta compra. "
+                     "Si no recibiste alguno, habla con una persona.")
+    if despachado <= TOLERANCIA_BS:
+        return monto, "La máquina no entregó tu compra. Te reembolsamos el total."
+    detalle = f": {_texto_items(falta)}" if falta else ""
+    return monto, f"La máquina entregó parte de tu compra. Te reembolsamos lo que faltó{detalle}."
+
+
 def _emitir_reservado(claim_id: int, row: Dict[str, Any], v: Dict[str, Any], key: str) -> str:
-    err_tope = _tope_error(row["device_id"], row["ip"], v["monto"])
+    monto, mensaje = monto_a_reembolsar(row, v)
+    if monto <= 0:
+        _marcar(claim_id, "ENTREGADO", mensaje, monto_real=0.0)
+        log.info("Claim %s ENTREGADO: la máquina despachó todo (%s)", claim_id, key)
+        return "ENTREGADO"
+    err_tope = _tope_error(row["device_id"], row["ip"], monto)
     if err_tope:
         _marcar(claim_id, "BLOQUEADO", err_tope)
         return "BLOQUEADO"
@@ -766,7 +835,9 @@ def _emitir_reservado(claim_id: int, row: Dict[str, Any], v: Dict[str, Any], key
         "maquina_id": row["maquina_id"],
         "mdb": row["mdb"],
         "producto": v["producto"] or row["producto"],
-        "monto": v["monto"],
+        "monto": monto,
+        "monto_cobrado": v["monto"],
+        "monto_despachado": v.get("monto_despachado"),
         "estado_cobro": v["estado"],
     }
     try:
@@ -778,10 +849,9 @@ def _emitir_reservado(claim_id: int, row: Dict[str, Any], v: Dict[str, Any], key
                 "Una persona lo revisará contigo.")
         return "ERROR_GIFTCARD"
 
-    _marcar(claim_id, "EMITIDO", "Compra confirmada.",
-            gift_code=codigo, monto_real=v["monto"])
-    _registrar_emision(claim_id, codigo, v["monto"], contexto)
-    log.info("Claim %s EMITIDO (%s, %.2f Bs, cobro %s)", claim_id, key, v["monto"], v["estado"] or "?")
+    _marcar(claim_id, "EMITIDO", mensaje, gift_code=codigo, monto_real=monto)
+    _registrar_emision(claim_id, codigo, monto, contexto)
+    log.info("Claim %s EMITIDO (%s, %.2f de %.2f Bs, cobro %s)", claim_id, key, monto, v["monto"], v["estado"] or "?")
     return "EMITIDO"
 
 
