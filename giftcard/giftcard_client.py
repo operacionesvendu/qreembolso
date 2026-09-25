@@ -30,7 +30,8 @@ GIFTCARD_ALLOW_STUB = os.getenv("GIFTCARD_ALLOW_STUB", "").strip().lower() in ("
 
 
 def _hay_credenciales_mcp() -> bool:
-    return bool(os.getenv("EPAY_MCP_TOKEN") or (os.getenv("EPAY_MCP_USER") and os.getenv("EPAY_MCP_PASS")))
+    return bool(os.getenv("MCP_TOKEN_GIFTCARD") or os.getenv("EPAY_MCP_TOKEN")
+                or (os.getenv("EPAY_MCP_USER") and os.getenv("EPAY_MCP_PASS")))
 
 
 def _stub(contexto: Dict[str, Any]) -> str:
