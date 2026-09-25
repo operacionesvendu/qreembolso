@@ -55,6 +55,8 @@ def _emitir_via_mcp(contexto: Dict[str, Any]) -> str:
                        f"maq {contexto.get('maquina_id', '')} {contexto.get('producto') or ''}".strip(),
         "monto": round(float(monto), 2),
         "vence": _fecha_vence(),
+        # idempotencia en el MCP: el mismo cobro (tx_key) nunca crea dos tarjetas
+        "ref": str(contexto.get("referencia") or ""),
         "unico": True,
         "confirmar": True,
     })

@@ -235,6 +235,7 @@ def test_emision_via_mcp(fake, monkeypatch):
     assert ms.intento_match(cid) == "EMITIDO"
     assert ms.estado_reclamo(cid)["gift_code"] == "GC0001"
     assert fake.emitidas[0]["monto"] == 150.0 and fake.emitidas[0]["confirmar"] is True
+    assert fake.emitidas[0]["ref"].startswith(f"{MAQ}|")  # idempotencia por cobro
     fila = ms._one("SELECT * FROM emisiones WHERE claim_id=?", (cid,))
     assert fila and fila["codigo"] == "GC0001"
 
