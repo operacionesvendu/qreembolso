@@ -60,6 +60,7 @@ class FakeMCP:
             "slots": [
                 {"nombre": "Doritos", "seleccion": "000b", "cantidad": 3, "precio_bs": 150.0},
                 {"nombre": "Agotado", "seleccion": "000c", "cantidad": 0, "precio_bs": 99.0},
+                {"nombre": "Coca-Cola", "seleccion": "000d", "cantidad": 5, "precio_bs": 120.5},
             ],
         }
 
@@ -84,8 +85,8 @@ def _device():
     return f"dtest{_n:04d}"
 
 
-def _reclamo(device, monto=150.0, mdb="000b", ip="1.1.1.1"):
-    r = ms.crear_reclamo(MAQ, mdb, "Doritos", monto, device, ip)
+def _reclamo(device, pedido=(("000b", 1),), ip="1.1.1.1"):
+    r = ms.crear_reclamo(MAQ, list(pedido), device, ip)
     assert r["ok"], r
     return r["claim_id"]
 
@@ -101,7 +102,15 @@ def test_emite_con_cobro_sin_despacho(fake):
     assert est["monto_real"] == 150.0
 
 
-def test_no_reembolsa_compra_despachada(fake):
+def test_por_defecto_emite_aunque_figure_despachado(fake):
+    fake.cobro(estado="despachado")
+    cid = _reclamo(_device())
+    assert ms.intento_match(cid) == "EMITIDO"
+    assert ms.estado_reclamo(cid)["estado_cobro"] == "despachado"
+
+
+def test_estados_restringidos(fake, monkeypatch):
+    monkeypatch.setattr(ms, "ESTADOS_REEMBOLSABLES", {"sin_despacho"})
     fake.cobro(estado="despachado")
     cid = _reclamo(_device())
     assert ms.intento_match(cid) == "PENDIENTE"
@@ -109,8 +118,40 @@ def test_no_reembolsa_compra_despachada(fake):
 
 def test_monto_distinto_no_coincide(fake):
     fake.cobro(monto=200.0)
-    cid = _reclamo(_device(), monto=150.0)
+    cid = _reclamo(_device())
     assert ms.intento_match(cid) == "PENDIENTE"
+
+
+def test_un_producto_exige_mismo_mdb(fake):
+    fake.cobro(mdb="000d", monto=150.0)
+    cid = _reclamo(_device())
+    assert ms.intento_match(cid) == "PENDIENTE"
+
+
+def test_varios_productos_suma_del_planograma(fake):
+    fake.cobro(mdb="000d", monto=420.5)  # 2 x 150 + 120.50
+    cid = _reclamo(_device(), pedido=(("000b", 2), ("000d", 1)))
+    est = ms.estado_reclamo(cid)
+    assert est["monto"] == 420.5 and est["producto"] == "Doritos x2, Coca-Cola"
+    assert ms.intento_match(cid) == "EMITIDO"
+    assert ms.estado_reclamo(cid)["monto_real"] == 420.5
+
+
+def test_varios_productos_monto_distinto(fake):
+    fake.cobro(monto=300.0)
+    cid = _reclamo(_device(), pedido=(("000b", 2), ("000d", 1)))
+    assert ms.intento_match(cid) == "PENDIENTE"
+
+
+def test_producto_sin_stock_o_inexistente(fake):
+    for mdb in ("000c", "ffff"):
+        r = ms.crear_reclamo(MAQ, [(mdb, 1)], _device(), "1.1.1.1")
+        assert not r["ok"] and r["status"] == 400
+
+
+def test_maximo_de_productos(fake):
+    r = ms.crear_reclamo(MAQ, [("000b", ms.MAX_ITEMS + 1)], _device(), "1.1.1.1")
+    assert not r["ok"] and r["status"] == 400
 
 
 def test_cobro_fuera_de_ventana(fake):
@@ -146,14 +187,14 @@ def test_limite_de_reclamos_por_dispositivo(fake):
     for _ in range(ms.MAX_POR_DISPOSITIVO):
         cid = _reclamo(d)
         ms.cancelar_por_usuario(cid, d)
-    r = ms.crear_reclamo(MAQ, "000b", "Doritos", 150.0, d, "9.9.9.9")
+    r = ms.crear_reclamo(MAQ, [("000b", 1)], d, "9.9.9.9")
     assert not r["ok"] and "Limite" in r["error"]
 
 
 def test_un_reclamo_pendiente_a_la_vez(fake):
     d = _device()
     _reclamo(d)
-    r = ms.crear_reclamo(MAQ, "000b", "Doritos", 150.0, d, "1.1.1.1")
+    r = ms.crear_reclamo(MAQ, [("000b", 1)], d, "1.1.1.1")
     assert not r["ok"] and "en curso" in r["error"]
 
 
@@ -197,11 +238,12 @@ def test_api_flujo_completo(fake):
     with TestClient(app_mod.app) as c:
         h = {"X-Device-Id": d}
         info = c.get(f"/api/maquina/{MAQ}").json()
-        assert [p["mdb"] for p in info["productos"]] == ["000b"]
+        assert [p["mdb"] for p in info["productos"]] == ["000d", "000b"]
 
         r = c.post("/api/reclamo", headers=h,
-                   json={"maquina_id": MAQ, "mdb": "000b", "producto": "Doritos", "monto": 150})
+                   json={"maquina_id": MAQ, "items": [{"mdb": "000b", "cantidad": 1}]})
         assert r.status_code == 200, r.text
+        assert r.json()["monto"] == 150.0
         cid = r.json()["claim_id"]
 
         ms.intento_match(cid)
@@ -222,17 +264,23 @@ def test_api_cancelar(fake):
     with TestClient(app_mod.app) as c:
         h = {"X-Device-Id": d}
         cid = c.post("/api/reclamo", headers=h,
-                     json={"maquina_id": MAQ, "mdb": "000b", "monto": 150}).json()["claim_id"]
+                     json={"maquina_id": MAQ, "items": [{"mdb": "000b"}]}).json()["claim_id"]
         assert c.post(f"/api/reclamo/{cid}/cancelar", headers=h).json()["ok"] is True
         assert c.get(f"/api/reclamo/{cid}", headers=h).json()["state"] == "CANCELADO"
 
 
 def test_api_valida_entrada(fake):
     with TestClient(app_mod.app) as c:
-        assert c.post("/api/reclamo", json={"maquina_id": MAQ, "mdb": "000b"}).status_code == 400
+        cuerpo = {"maquina_id": MAQ, "items": [{"mdb": "000b"}]}
+        assert c.post("/api/reclamo", json=cuerpo).status_code == 400  # sin X-Device-Id
         h = {"X-Device-Id": _device()}
         assert c.post("/api/reclamo", headers=h,
-                      json={"maquina_id": MAQ, "mdb": "000b", "monto": -5}).status_code == 422
+                      json={"maquina_id": MAQ, "items": []}).status_code == 422
+        assert c.post("/api/reclamo", headers=h,
+                      json={"maquina_id": MAQ, "items": [{"mdb": "000c"}]}).status_code == 400
+        # un monto enviado por el cliente se ignora: manda el planograma
+        r = c.post("/api/reclamo", headers=h, json={**cuerpo, "monto": 1})
+        assert r.json()["monto"] == 150.0
 
 
 def test_api_admin(fake):

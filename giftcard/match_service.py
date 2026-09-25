@@ -1,18 +1,22 @@
 """
 match_service.py -- Motor de reclamacion "la maquina no despacho".
 
-Verifica contra ePay que exista un COBRO real sin despacho (cobros_maquina
-por maquina) que coincida con lo que el usuario reclama: misma maquina,
-mismo producto (MDB de la seleccion), dentro de una ventana de tiempo, y
-con claim unico (un cobro solo se canjea UNA vez).
+Verifica contra ePay que exista un COBRO real (cobros_maquina por maquina)
+que coincida con lo que el usuario reclama: misma maquina, mismo monto que
+los productos seleccionados, dentro de una ventana de tiempo, y con claim
+unico (un cobro solo se canjea UNA vez).
 
 Un cobro se considera valido solo si:
-  * ePay lo marca con un estado reembolsable (RECLAMO_ESTADOS, por defecto
-    solo `sin_despacho`: se cobro y la maquina no entrego nada),
-  * su codigo MDB de producto coincide con el reclamado,
+  * su monto es igual a la suma de precios (planograma) de los productos
+    seleccionados (+- RECLAMO_TOLERANCIA_BS),
+  * si se reclama UN solo producto, su codigo MDB coincide con el cobro
+    (con varios productos -compra de carrito- solo se exige el monto),
   * su timestamp cae dentro de [creacion del reclamo - ventana, ahora],
   * aun no ha sido reclamado por otro claim (tx_key UNIQUE),
-  * si el usuario confirmo un monto, el monto real del cobro coincide.
+  * su `estado` esta en RECLAMO_ESTADOS. Por defecto `*` = cualquiera
+    (despachado incluido): politica temporal para bajar la carga de
+    reembolsos manuales. El estado queda guardado en `estado_cobro` para
+    auditar despues cuantas tarjetas se dieron por compras despachadas.
 
 Almacen:
   * DATABASE_URL (postgres://...) -> tablas `vendu.giftcard_*` de
@@ -49,9 +53,11 @@ GIFTCARD_MAX_BS = float(os.getenv("GIFTCARD_MAX_BS", "10000"))
 GIFTCARD_MAX_BS_IP = float(os.getenv("GIFTCARD_MAX_BS_IP", "25000"))
 ESTADOS_REEMBOLSABLES = {
     e.strip().lower()
-    for e in os.getenv("RECLAMO_ESTADOS", "sin_despacho").split(",")
+    for e in os.getenv("RECLAMO_ESTADOS", "*").split(",")
     if e.strip()
 }
+TOLERANCIA_BS = float(os.getenv("RECLAMO_TOLERANCIA_BS", "0.01"))
+MAX_ITEMS = int(os.getenv("RECLAMO_MAX_ITEMS", "10"))
 
 TERMINALES = {"EMITIDO", "NO_ENCONTRADO", "ERROR_GIFTCARD", "AMBIGUO", "BLOQUEADO", "CANCELADO"}
 
@@ -75,6 +81,7 @@ CREATE TABLE IF NOT EXISTS claims (
     device_id   TEXT    NOT NULL,
     ip          TEXT,
     tx_key      TEXT UNIQUE,
+    estado_cobro TEXT,
     state       TEXT    NOT NULL DEFAULT 'PENDIENTE',
     gift_code   TEXT,
     mensaje     TEXT,
@@ -158,6 +165,10 @@ def init_db() -> None:
     with _DB_LOCK:
         con = sqlite3.connect(DB_PATH)
         con.executescript(_SCHEMA_SQLITE)
+        try:  # bases creadas antes de estado_cobro
+            con.execute("ALTER TABLE claims ADD COLUMN estado_cobro TEXT")
+        except sqlite3.OperationalError:
+            pass
         con.commit()
         con.close()
 
@@ -266,29 +277,83 @@ def _tope_error(device_id: str, ip: str, monto: Optional[float]) -> Optional[str
 
 # ------------------------------------------------------------------ claims
 
+def productos_en_stock(maquina_id: int) -> Dict[str, Dict[str, Any]]:
+    """Productos con stock de la maquina, por MDB (seleccion), segun el planograma."""
+    pg = MCPSync.planograma(maquina_id)
+    vistos: Dict[str, Dict[str, Any]] = {}
+    for slot in pg.get("slots", []):
+        nombre = (slot.get("nombre") or "").strip()
+        mdb = (slot.get("seleccion") or "").strip().lower()
+        cant = slot.get("cantidad") or 0
+        if not nombre or not mdb or cant <= 0:
+            continue
+        vistos[mdb] = {
+            "mdb": mdb,
+            "nombre": nombre,
+            "precio_bs": round(slot.get("precio_bs") or 0, 2),
+            "stock": int(cant),
+        }
+    return vistos
+
+
+def armar_pedido(maquina_id: int, pedido: List[tuple]) -> Dict[str, Any]:
+    """[(mdb, cantidad), ...] -> monto esperado (precios del planograma) + descripcion.
+
+    El monto lo calcula el servidor: el usuario no puede escribir un monto
+    arbitrario para calzar con el cobro de otra persona.
+    """
+    cantidades: Dict[str, int] = {}
+    for mdb, cant in pedido:
+        clave = (mdb or "").strip().lower()
+        cantidades[clave] = cantidades.get(clave, 0) + int(cant)
+    total_items = sum(cantidades.values())
+    if total_items < 1 or any(c < 1 for c in cantidades.values()):
+        return {"ok": False, "status": 400, "error": "Elige al menos un producto."}
+    if total_items > MAX_ITEMS:
+        return {"ok": False, "status": 400, "error": f"Maximo {MAX_ITEMS} productos por reclamo."}
+    try:
+        stock = productos_en_stock(maquina_id)
+    except Exception as e:
+        log.warning("planograma(%s) fallo: %s", maquina_id, e)
+        return {"ok": False, "status": 502,
+                "error": "No pudimos consultar la maquina. Intenta de nuevo en unos segundos."}
+    if any(m not in stock or not stock[m]["precio_bs"] for m in cantidades):
+        return {"ok": False, "status": 400,
+                "error": "Algun producto ya no esta disponible en esta maquina. Vuelve a elegir."}
+    monto = round(sum(stock[m]["precio_bs"] * c for m, c in cantidades.items()), 2)
+    producto = ", ".join(
+        stock[m]["nombre"] + (f" x{c}" if c > 1 else "") for m, c in sorted(cantidades.items())
+    )
+    return {"ok": True, "mdb": ",".join(sorted(cantidades)), "producto": producto[:200], "monto": monto}
+
+
 def crear_reclamo(
     maquina_id: int,
-    mdb: str,
-    producto: str,
-    monto: Optional[float],
+    pedido: List[tuple],
     device_id: str,
     ip: str,
 ) -> Dict[str, Any]:
+    bloqueo = check_limites(device_id, ip)
+    if bloqueo:
+        return {"ok": False, "status": 429, "error": bloqueo}
+    armado = armar_pedido(maquina_id, pedido)
+    if not armado["ok"]:
+        return armado
     with _DB_LOCK:
         bloqueo = check_limites(device_id, ip)
         if bloqueo:
-            return {"ok": False, "error": bloqueo}
+            return {"ok": False, "status": 429, "error": bloqueo}
         row = _one(
             f"INSERT INTO {T_CLAIMS}(maquina_id, mdb, producto, monto, device_id, ip, created_at) "
             "VALUES(?,?,?,?,?,?,?) RETURNING id",
-            (maquina_id, mdb.strip().lower(), producto, monto, device_id, ip, _ts(_now())),
+            (maquina_id, armado["mdb"], armado["producto"], armado["monto"], device_id, ip, _ts(_now())),
         )
         claim_id = int(row["id"])
         dia = _dia()
         _incr(f"dev:{device_id}", dia)
         if ip:
             _incr(f"ip:{ip}", dia)
-    return {"ok": True, "claim_id": claim_id}
+    return {"ok": True, "claim_id": claim_id, "monto": armado["monto"], "producto": armado["producto"]}
 
 
 def _fila(claim_id: int) -> Optional[Dict[str, Any]]:
@@ -300,8 +365,9 @@ def estado_reclamo(claim_id: int) -> Optional[Dict[str, Any]]:
     if not d:
         return None
     d["terminal"] = d["state"] in TERMINALES
-    if d.get("monto_real") is not None:
-        d["monto_real"] = float(d["monto_real"])
+    for k in ("monto", "monto_real"):
+        if d.get(k) is not None:
+            d[k] = float(d[k])
     return d
 
 
@@ -466,24 +532,31 @@ def _ventas_ventana(maquina_id: int, desde: datetime, hasta: datetime) -> List[D
     return salida
 
 
+def _estado_ok(estado: str) -> bool:
+    return "*" in ESTADOS_REEMBOLSABLES or estado in ESTADOS_REEMBOLSABLES
+
+
 def _txkey(maquina_id: int, venta: Dict[str, Any]) -> str:
     return f"{maquina_id}|{venta['dt']:%Y-%m-%d %H:%M:%S}|{venta['mdb']}|{venta['monto']:.2f}"
 
 
 def candidatas(claim_id: int) -> List[Dict[str, Any]]:
-    """Cobros sin despacho y sin reclamar que encajan con el claim (producto + ventana)."""
+    """Cobros sin reclamar que encajan con el claim (monto + producto + ventana)."""
     row = _fila(claim_id)
     if not row or row["state"] != "PENDIENTE":
         return []
-    mdb = (row["mdb"] or "").strip().lower()
+    mdbs = {m for m in (row["mdb"] or "").strip().lower().split(",") if m}
     monto_obj = _float(row["monto"])
+    if monto_obj is None:
+        return []
     desde = _as_dt(row["created_at"]) - timedelta(minutes=VENTANA_MIN)
     ventas = [
         v for v in _ventas_ventana(int(row["maquina_id"]), desde, _now())
-        if v["mdb"] == mdb and v["estado"] in ESTADOS_REEMBOLSABLES and v["monto"] is not None
+        if v["monto"] is not None
+        and abs(v["monto"] - monto_obj) <= TOLERANCIA_BS
+        and _estado_ok(v["estado"])
+        and (len(mdbs) != 1 or v["mdb"] in mdbs)
     ]
-    if monto_obj is not None:
-        ventas = [v for v in ventas if abs(v["monto"] - monto_obj) < 0.01]
     if not ventas:
         return []
     claves = [_txkey(int(row["maquina_id"]), v) for v in ventas]
@@ -544,9 +617,9 @@ def intento_match(claim_id: int) -> str:
     # Reserva atomica: si otro claim gano la carrera, tx_key UNIQUE lo impide.
     try:
         reservo = _run(
-            f"UPDATE {T_CLAIMS} SET tx_key=?, updated_at=? "
+            f"UPDATE {T_CLAIMS} SET tx_key=?, estado_cobro=?, updated_at=? "
             "WHERE id=? AND tx_key IS NULL AND state='PENDIENTE'",
-            (key, _ts(_now()), claim_id),
+            (key, v["estado"] or None, _ts(_now()), claim_id),
         ) == 1
     except _INTEGRITY:
         reservo = False
@@ -567,6 +640,7 @@ def intento_match(claim_id: int) -> str:
         "mdb": row["mdb"],
         "producto": v["producto"] or row["producto"],
         "monto": v["monto"],
+        "estado_cobro": v["estado"],
     }
     try:
         codigo = emitir_giftcard(contexto)
@@ -579,7 +653,7 @@ def intento_match(claim_id: int) -> str:
     _marcar(claim_id, "EMITIDO", "Compra confirmada en la maquina. Presenta este codigo.",
             gift_code=codigo, monto_real=v["monto"])
     _registrar_emision(claim_id, codigo, v["monto"], contexto)
-    log.info("Claim %s EMITIDO (%s, %.2f Bs)", claim_id, key, v["monto"])
+    log.info("Claim %s EMITIDO (%s, %.2f Bs, cobro %s)", claim_id, key, v["monto"], v["estado"] or "?")
     return "EMITIDO"
 
 
