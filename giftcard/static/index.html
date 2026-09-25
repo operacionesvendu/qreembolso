@@ -554,6 +554,7 @@ function mostrarResultado(est){
     b.innerHTML = '<div class="icono-grande">'+ICONOS.ok+'</div>'
       + '<h2>¡Listo! Aquí está tu saldo</h2>'
       + (monto ? '<div class="monto">Bs '+fmt(monto)+'</div>' : '')
+      + (est.mensaje && est.mensaje !== 'Compra confirmada.' ? '<p class="lead">'+esc(est.mensaje)+'</p>' : '')
       + '<div class="qrbox"><img id="qr-img" alt="Código QR de tu gift card"></div>'
       + '<div class="codigo" id="gift-code">'+esc(est.gift_code)+'</div>'
       + '<button class="btn primario" onclick="copiar()">'+ICONOS.copiar+'<span>Copiar código</span></button>'
@@ -570,6 +571,11 @@ function mostrarResultado(est){
     const titulos = {AMBIGUO:'Necesitamos confirmar tu compra', ERROR_GIFTCARD:'Hubo un problema', BLOQUEADO:'Llegaste al límite de hoy'};
     b.innerHTML = '<div class="icono-grande">'+ICONOS.alerta+'</div>'
       + '<h2>'+titulos[est.state]+'</h2>'
+      + '<p class="lead">'+esc(est.mensaje||'')+'</p>'
+      + btnAyuda + ref;
+  } else if(est.state==='ENTREGADO'){
+    b.innerHTML = '<div class="icono-grande">'+ICONOS.alerta+'</div>'
+      + '<h2>La máquina registró la entrega</h2>'
       + '<p class="lead">'+esc(est.mensaje||'')+'</p>'
       + btnAyuda + ref;
   } else if(est.state==='CANCELADO'){

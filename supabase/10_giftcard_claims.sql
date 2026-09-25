@@ -27,12 +27,14 @@ CREATE TABLE IF NOT EXISTS vendu.giftcard_claims (
 );
 
 ALTER TABLE vendu.giftcard_claims ADD COLUMN IF NOT EXISTS estado_cobro TEXT;
+-- productos reclamados (JSON: nombre, precio_bs, cantidad, producto_ids)
+ALTER TABLE vendu.giftcard_claims ADD COLUMN IF NOT EXISTS items TEXT;
 
 -- Estados validos (se recrea el CHECK para sumar CANCELADO en bases viejas)
 ALTER TABLE vendu.giftcard_claims DROP CONSTRAINT IF EXISTS giftcard_claims_state_check;
 ALTER TABLE vendu.giftcard_claims ADD CONSTRAINT giftcard_claims_state_check
     CHECK (state IN ('PENDIENTE','EMITIDO','NO_ENCONTRADO','AMBIGUO',
-                     'ERROR_GIFTCARD','BLOQUEADO','CANCELADO'));
+                     'ERROR_GIFTCARD','BLOQUEADO','CANCELADO','ENTREGADO'));
 
 CREATE INDEX IF NOT EXISTS giftcard_claims_maq_idx
     ON vendu.giftcard_claims (maquina_id, created_at);
