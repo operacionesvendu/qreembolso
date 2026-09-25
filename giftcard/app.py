@@ -101,7 +101,7 @@ class ReclamoIn(BaseModel):
 def _device_id(req: Request) -> str:
     d = req.headers.get("X-Device-Id", "").strip()
     if not d or len(d) > 64 or not d.isascii() or not d.replace("-", "").isalnum():
-        raise HTTPException(400, "Falta X-Device-Id valido")
+        raise HTTPException(400, "Falta X-Device-Id válido")
     return d
 
 
@@ -160,13 +160,13 @@ def pagina_maquina(maquina_id: int):
 @app.get("/api/maquina/{maquina_id}")
 def info_maquina(maquina_id: int):
     if maquina_id <= 0:
-        raise HTTPException(404, "Maquina inexistente")
+        raise HTTPException(404, "Máquina inexistente")
     try:
         pg = ms.MCPSync.planograma(maquina_id)
         vistos = ms.productos_en_stock(maquina_id)
     except Exception as e:
         log.warning("planograma(%s) fallo: %s", maquina_id, e)
-        raise HTTPException(502, "No pudimos consultar la maquina. Intenta de nuevo en unos segundos.")
+        raise HTTPException(502, "No pudimos consultar la máquina. Intenta de nuevo en unos segundos.")
     return {
         "maquina_id": pg.get("maquina_id") or maquina_id,
         "nombre": pg.get("nombre") or "",

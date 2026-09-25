@@ -199,7 +199,7 @@ def test_limite_de_reclamos_por_dispositivo(fake):
         cid = _reclamo(d)
         ms.cancelar_por_usuario(cid, d)
     r = ms.crear_reclamo(MAQ, [("000b", 1)], d, "9.9.9.9")
-    assert not r["ok"] and "Limite" in r["error"]
+    assert not r["ok"] and "límite" in r["error"]
 
 
 def test_un_reclamo_pendiente_a_la_vez(fake):

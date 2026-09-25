@@ -234,15 +234,15 @@ def _cuenta(scope: str, dia: str) -> int:
 def check_limites(device_id: str, ip: str) -> Optional[str]:
     dia = _dia()
     if _cuenta(f"dev:{device_id}", dia) >= MAX_POR_DISPOSITIVO:
-        return f"Limite diario alcanzado para este dispositivo ({MAX_POR_DISPOSITIVO}/dia)."
+        return f"Llegaste al límite de reclamos de hoy en este teléfono ({MAX_POR_DISPOSITIVO} por día)."
     if ip and _cuenta(f"ip:{ip}", dia) >= MAX_POR_IP:
-        return f"Demasiados reclamos desde esta conexion ({MAX_POR_IP}/dia)."
+        return "Hay demasiados reclamos hoy desde esta conexión. Intenta mañana o habla con una persona."
     activo = _one(
         f"SELECT id FROM {T_CLAIMS} WHERE device_id=? AND state='PENDIENTE' LIMIT 1",
         (device_id,),
     )
     if activo:
-        return "Ya tienes un reclamo en curso. Termina o espera el resultado."
+        return "Ya tienes un reclamo en curso. Espera su resultado."
     return None
 
 
@@ -276,11 +276,10 @@ def _tope_error(device_id: str, ip: str, monto: Optional[float]) -> Optional[str
     monto = monto or 0.0
     if device_id and GIFTCARD_MAX_BS > 0:
         if _suma_emitida("device_id", device_id) + monto > GIFTCARD_MAX_BS:
-            return (f"Alcanzaste el limite de reembolsos del dia "
-                    f"({GIFTCARD_MAX_BS:.2f} Bs/usuario). Intenta manana.")
+            return "Alcanzaste el límite de reembolsos de hoy. Intenta mañana o habla con una persona."
     if ip and GIFTCARD_MAX_BS_IP > 0:
         if _suma_emitida("ip", ip) + monto > GIFTCARD_MAX_BS_IP:
-            return "Limite de reembolsos del dia alcanzado desde esta conexion."
+            return "Se alcanzó el límite de reembolsos de hoy desde esta conexión. Habla con una persona."
     return None
 
 
@@ -330,16 +329,16 @@ def armar_pedido(maquina_id: int, pedido: List[tuple]) -> Dict[str, Any]:
     if total_items < 1 or any(c < 1 for c in cantidades.values()):
         return {"ok": False, "status": 400, "error": "Elige al menos un producto."}
     if total_items > MAX_ITEMS:
-        return {"ok": False, "status": 400, "error": f"Maximo {MAX_ITEMS} productos por reclamo."}
+        return {"ok": False, "status": 400, "error": f"Máximo {MAX_ITEMS} productos por reclamo."}
     try:
         stock = productos_en_stock(maquina_id)
     except Exception as e:
         log.warning("planograma(%s) fallo: %s", maquina_id, e)
         return {"ok": False, "status": 502,
-                "error": "No pudimos consultar la maquina. Intenta de nuevo en unos segundos."}
+                "error": "No pudimos consultar la máquina. Intenta de nuevo en unos segundos."}
     if any(m not in stock or not stock[m]["precio_bs"] for m in cantidades):
         return {"ok": False, "status": 400,
-                "error": "Algun producto ya no esta disponible en esta maquina. Vuelve a elegir."}
+                "error": "Algún producto ya no está disponible en esta máquina. Vuelve a elegir."}
     monto = round(sum(stock[m]["precio_bs"] * c for m, c in cantidades.items()), 2)
     producto = ", ".join(
         stock[m]["nombre"] + (f" x{c}" if c > 1 else "") for m, c in sorted(cantidades.items())
@@ -401,8 +400,8 @@ def pendientes() -> List[int]:
 def cancelar_pendiente_tardio(claim_id: int) -> bool:
     """Marca NO_ENCONTRADO si el claim sigue PENDIENTE (sin venta reservada)."""
     return _run(
-        f"UPDATE {T_CLAIMS} SET state='NO_ENCONTRADO', mensaje='No se encontro la compra en "
-        "este periodo. Intenta de nuevo o habla con un operador.', updated_at=? "
+        f"UPDATE {T_CLAIMS} SET state='NO_ENCONTRADO', mensaje='No encontramos un pago que "
+        "coincida en los últimos minutos.', updated_at=? "
         "WHERE id=? AND state='PENDIENTE' AND tx_key IS NULL",
         (_ts(_now()), claim_id),
     ) == 1
@@ -630,7 +629,8 @@ def intento_match(claim_id: int) -> str:
         # Se reservo un cobro pero el proceso murio antes de terminar la emision:
         # no se sabe si la tarjeta llego a crearse. Lo revisa un operador.
         _marcar(claim_id, "ERROR_GIFTCARD",
-                "La compra se confirmo pero la emision quedo interrumpida. Habla con un operador.")
+                "Encontramos tu pago, pero la emisión del código se interrumpió. "
+                "Una persona lo revisará contigo.")
         return "ERROR_GIFTCARD"
 
     if (_now() - _as_dt(row["created_at"])).total_seconds() > TIMEOUT_S:
@@ -640,8 +640,8 @@ def intento_match(claim_id: int) -> str:
     ventas = candidatas(claim_id)
     if len(ventas) > 1:
         _marcar(claim_id, "AMBIGUO",
-                "Hay varias compras del mismo producto en este periodo y no se pudo "
-                "confirmar cual es la tuya. Habla con un operador.")
+                "Hubo varias compras iguales en este momento y no pudimos confirmar "
+                "cuál es la tuya. Una persona te ayudará.")
         return "AMBIGUO"
     if not ventas:
         return "PENDIENTE"
@@ -691,10 +691,11 @@ def _emitir_reservado(claim_id: int, row: Dict[str, Any], v: Dict[str, Any], key
     except Exception as e:
         log.error("Emision fallida para claim %s: %s", claim_id, e)
         _marcar(claim_id, "ERROR_GIFTCARD",
-                "La compra se confirmo pero fallo la generacion del codigo. Habla con un operador.")
+                "Encontramos tu pago, pero no pudimos generar el código. "
+                "Una persona lo revisará contigo.")
         return "ERROR_GIFTCARD"
 
-    _marcar(claim_id, "EMITIDO", "Compra confirmada en la maquina. Presenta este codigo.",
+    _marcar(claim_id, "EMITIDO", "Compra confirmada.",
             gift_code=codigo, monto_real=v["monto"])
     _registrar_emision(claim_id, codigo, v["monto"], contexto)
     log.info("Claim %s EMITIDO (%s, %.2f Bs, cobro %s)", claim_id, key, v["monto"], v["estado"] or "?")
