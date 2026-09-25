@@ -72,6 +72,7 @@ def fake(monkeypatch):
     f = FakeMCP()
     monkeypatch.setattr(ms.MCPSync, "call", classmethod(lambda cls, t, a: f.call(t, a)))
     monkeypatch.setattr(ms.MCPSync, "planograma", classmethod(lambda cls, m: f.planograma(m)))
+    monkeypatch.setattr(ms.MCPSync, "puede_emitir", classmethod(lambda cls: True))
     with ms._db() as con:
         for t in ("emisiones", "claims", "daily_limits"):
             con.execute(f"DELETE FROM {t}")
@@ -313,6 +314,11 @@ def test_api_admin(fake):
         r = c.get("/api/admin/reclamos?estado=pendiente",
                   headers={"Authorization": "Bearer secreto"})
         assert r.status_code == 200 and len(r.json()["reclamos"]) == 1
+
+
+def test_healthz_reporta_emision(fake):
+    with TestClient(app_mod.app) as c:
+        assert c.get("/healthz").json()["emision"] is True
 
 
 def test_ip_usa_proxy_de_confianza():

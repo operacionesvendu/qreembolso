@@ -235,6 +235,15 @@ class EpayMCP:
 
     # ------------------------------------------------------------------- tools
 
+    def list_tools(self) -> List[str]:
+        """Nombres de las tools que esta conexión (token) puede usar."""
+        if self._session is None or not self._sid:
+            self.connect()
+        resp = self._post({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}})
+        texto = resp.content.decode("utf-8", errors="replace")
+        payload = json.loads(_sse_payload(texto) or texto or "{}")
+        return [t.get("name", "") for t in (payload.get("result") or {}).get("tools", [])]
+
     def call_tool(self, nombre: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
         """Ejecuta una tool y devuelve el JSON (application/json) del resultado."""
         if self._session is None or not self._sid:

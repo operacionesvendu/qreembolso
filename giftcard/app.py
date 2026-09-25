@@ -77,6 +77,8 @@ async def lifespan(app: FastAPI):
         _lanzar_poll(cid)
     if ids:
         log.info("Reanudados %d reclamos pendientes", len(ids))
+    # Aviso temprano en el log si el token no sirve para emitir.
+    asyncio.get_running_loop().run_in_executor(None, ms.MCPSync.puede_emitir)
     yield
     for t in list(_reclamos_en_curso.values()):
         t.cancel()
@@ -149,7 +151,9 @@ def home():
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "db": ms.backend(), "en_curso": len(_reclamos_en_curso)}
+    # emision: el token MCP puede crear gift cards (None = no se pudo consultar)
+    return {"ok": True, "db": ms.backend(), "en_curso": len(_reclamos_en_curso),
+            "emision": ms.MCPSync.puede_emitir()}
 
 
 @app.get("/q/{maquina_id}")

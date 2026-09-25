@@ -469,7 +469,10 @@ class MCPSync:
                     sys.path.insert(0, root)
                 from epay_mcp import EpayMCP
 
-                cls._mcp = EpayMCP().connect()
+                # MCP_TOKEN_GIFTCARD (del servicio Epay.Uno) es el token acotado del
+                # bot: lee máquinas/planograma/cobros y es el único que emite gift
+                # cards. Si está, tiene prioridad sobre EPAY_MCP_TOKEN.
+                cls._mcp = EpayMCP(token=os.getenv("MCP_TOKEN_GIFTCARD", "").strip() or None).connect()
             return cls._mcp
 
     @classmethod
@@ -477,6 +480,26 @@ class MCPSync:
         mcp = cls._conectar()
         with cls._call_lock:
             return mcp.call_tool(tool, args)
+
+    _emision: Optional[tuple] = None  # (timestamp, bool)
+
+    @classmethod
+    def puede_emitir(cls) -> Optional[bool]:
+        """True si el token conectado ve crear_gift_card (cache 5 min); None si no se pudo saber."""
+        ahora = _now().timestamp()
+        if cls._emision and cls._emision[0] + 300 > ahora:
+            return cls._emision[1]
+        try:
+            mcp = cls._conectar()
+            with cls._call_lock:
+                ok = "crear_gift_card" in mcp.list_tools()
+        except Exception as e:
+            log.warning("No se pudo verificar el permiso de emision: %s", e)
+            return None
+        cls._emision = (ahora, ok)
+        if not ok:
+            log.error("El token MCP configurado NO puede crear gift cards: usa MCP_TOKEN_GIFTCARD")
+        return ok
 
     @classmethod
     def planograma(cls, maquina_id: int):

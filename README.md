@@ -62,6 +62,7 @@ pero se multiplican las consultas a ePay.) Tras un reinicio, los reclamos
 | Variable                  | Defecto | Qué hace |
 |---|---|---|
 | `EPAY_MCP_TOKEN`          | —       | token del MCP ePay.uno (requerido) |
+| `MCP_TOKEN_GIFTCARD`      | —       | token acotado del bot en el MCP (el único que emite gift cards); si está, se usa en lugar de `EPAY_MCP_TOKEN`. `/healthz` muestra `"emision": true` cuando sirve |
 | `EPAY_MCP_USER`/`EPAY_MCP_PASS` | — | alternativa: Basic Auth al MCP |
 | `EPAY_MCP_URL`            | MCP epayuno | URL del MCP |
 | `DATABASE_URL`            | —       | Postgres de producción (sin ella: SQLite) |
