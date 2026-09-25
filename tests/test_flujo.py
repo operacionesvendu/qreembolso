@@ -321,6 +321,21 @@ def test_healthz_reporta_emision(fake):
         assert c.get("/healthz").json()["emision"] is True
 
 
+def test_fecha_vence_acepta_fecha_o_plazo():
+    from datetime import date
+    from giftcard.giftcard_client import _fecha_vence
+
+    hoy = date(2026, 9, 25)
+    assert _fecha_vence("", hoy) == "2027-09-25"
+    assert _fecha_vence("+365d", hoy) == "2027-09-25"   # valor que rompió la prueba en vivo
+    assert _fecha_vence("90", hoy) == "2026-12-24"
+    assert _fecha_vence("+30D", hoy) == "2026-10-25"
+    assert _fecha_vence("2027-12-31", hoy) == "2027-12-31"
+    assert _fecha_vence("2026-01-01", hoy) == "2027-09-25"  # pasada -> +365
+    assert _fecha_vence("2027-02-30", hoy) == "2027-09-25"  # inválida -> +365
+    assert _fecha_vence("un año", hoy) == "2027-09-25"
+
+
 def test_ip_usa_proxy_de_confianza():
     class R:
         headers = {"X-Forwarded-For": "6.6.6.6, 203.0.113.9"}
