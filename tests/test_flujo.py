@@ -243,7 +243,10 @@ def test_emision_via_mcp(fake, monkeypatch):
     assert ms.intento_match(cid) == "EMITIDO"
     assert ms.estado_reclamo(cid)["gift_code"] == "GC0001"
     assert fake.emitidas[0]["monto"] == 150.0 and fake.emitidas[0]["confirmar"] is True
-    assert fake.emitidas[0]["ref"].startswith(f"{MAQ}|")  # idempotencia por cobro
+    em = fake.emitidas[0]
+    assert em["ref"].startswith("c") and len(em["ref"]) == 13 and em["ref"].isalnum()  # idempotencia por cobro
+    assert em["descripcion"] == f"Reembolso QR {cid} maq {MAQ}"
+    assert em["descripcion"].isascii() and len(em["descripcion"]) <= 60
     fila = ms._one("SELECT * FROM emisiones WHERE claim_id=?", (cid,))
     assert fila and fila["codigo"] == "GC0001"
 
@@ -326,6 +329,16 @@ def test_api_admin(fake):
 def test_healthz_reporta_emision(fake):
     with TestClient(app_mod.app) as c:
         assert c.get("/healthz").json()["emision"] is True
+
+
+def test_descripcion_corta_y_ascii_con_carrito():
+    from giftcard.giftcard_client import _descripcion, _ref_corta
+
+    d = _descripcion({"claim_id": 1, "maquina_id": 10579,
+                      "producto": "Trululu Gusanos Ácidos Gomitas 70gr, Iselitas Yuca Chips con Sal 28gr x2"})
+    assert d == "Reembolso QR 1 maq 10579"
+    k = "10579|2026-09-25 22:30:44|0|4920.06"
+    assert _ref_corta(k) == _ref_corta(k) and _ref_corta(k) != _ref_corta(k + "x")
 
 
 def test_fecha_vence_acepta_fecha_o_plazo():
