@@ -73,6 +73,13 @@ def fake(monkeypatch):
     monkeypatch.setattr(ms.MCPSync, "call", classmethod(lambda cls, t, a: f.call(t, a)))
     monkeypatch.setattr(ms.MCPSync, "planograma", classmethod(lambda cls, m: f.planograma(m)))
     monkeypatch.setattr(ms.MCPSync, "puede_emitir", classmethod(lambda cls: True))
+    monkeypatch.setattr(ms.MCPSync, "maquinas_definidas", classmethod(lambda cls: [
+        {"maquina_id": 10505, "codigo": "V11-OFICEN", "nombre": "V11 - Oficentro Los Ruices - U1023033"},
+        {"maquina_id": 10356, "codigo": "V46-OFICRO", "nombre": "V46 - Oficentro RONDO - U1013414"},
+        {"maquina_id": 10512, "codigo": "V56-HUMBLT", "nombre": "INACTIVO - V56 - Comedor Hotel Humboldt"},
+        {"maquina_id": 10531, "codigo": "C03-CMDLT", "nombre": "C03 - Café CMDLT - U1009312"},
+        {"maquina_id": 10577, "codigo": "V28-EUROS2", "nombre": "V28 - Eurobuilding S2 - K"},
+    ]))
     with ms._db() as con:
         for t in ("emisiones", "claims", "daily_limits"):
             con.execute(f"DELETE FROM {t}")
@@ -334,6 +341,19 @@ def test_fecha_vence_acepta_fecha_o_plazo():
     assert _fecha_vence("2026-01-01", hoy) == "2027-09-25"  # pasada -> +365
     assert _fecha_vence("2027-02-30", hoy) == "2027-09-25"  # inválida -> +365
     assert _fecha_vence("un año", hoy) == "2027-09-25"
+
+
+def test_selector_de_maquinas(fake):
+    with TestClient(app_mod.app) as c:
+        assert c.get("/reclamo").status_code == 200
+        assert c.get("/", follow_redirects=False).headers["location"] == "/reclamo"
+        maqs = c.get("/api/maquinas").json()["maquinas"]
+    # sin inactivas ni café; nombre limpio y ordenado
+    assert maqs == [
+        {"maquina_id": 10577, "codigo": "V28", "nombre": "Eurobuilding S2"},
+        {"maquina_id": 10505, "codigo": "V11", "nombre": "Oficentro Los Ruices"},
+        {"maquina_id": 10356, "codigo": "V46", "nombre": "Oficentro RONDO"},
+    ]
 
 
 def test_ip_usa_proxy_de_confianza():

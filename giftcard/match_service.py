@@ -59,6 +59,8 @@ ESTADOS_REEMBOLSABLES = {
 }
 TOLERANCIA_BS = float(os.getenv("RECLAMO_TOLERANCIA_BS", "0.01"))
 MAX_ITEMS = int(os.getenv("RECLAMO_MAX_ITEMS", "10"))
+# Prefijos de código de las máquinas que aparecen en el selector de /reclamo.
+PREFIJOS_SELECTOR = [p.strip().upper() for p in os.getenv("RECLAMO_PREFIJOS", "V").split(",") if p.strip()]
 # Loguea en cada consulta los cobros vistos (hora, mdb, monto, estado) para
 # diagnosticar por que un reclamo no coincide. No incluye datos personales.
 LOG_COBROS = os.getenv("RECLAMO_LOG_COBROS", "1").strip().lower() in ("1", "true", "si", "yes")
@@ -501,6 +503,21 @@ class MCPSync:
             log.error("El token MCP configurado NO puede crear gift cards: usa MCP_TOKEN_GIFTCARD")
         return ok
 
+    _cache_maquinas: Optional[tuple] = None  # (timestamp, lista)
+    MAQUINAS_TTL_S = 600
+
+    @classmethod
+    def maquinas_definidas(cls) -> List[Dict[str, Any]]:
+        """Catálogo de máquinas del portal (cache 10 min)."""
+        ahora = _now().timestamp()
+        if cls._cache_maquinas and cls._cache_maquinas[0] + cls.MAQUINAS_TTL_S > ahora:
+            return cls._cache_maquinas[1]
+        mcp = cls._conectar()
+        with cls._call_lock:
+            lista = mcp.maquinas_definidas()
+        cls._cache_maquinas = (ahora, lista)
+        return lista
+
     @classmethod
     def planograma(cls, maquina_id: int):
         clave = maquina_id
@@ -513,6 +530,49 @@ class MCPSync:
             pg = mcp.planograma(maquina_id)
         cls._cached_planos[clave] = (_now().timestamp(), pg)
         return pg
+
+
+def _nombre_publico(codigo: str, nombre: str) -> str:
+    """'V11 - Oficentro Los Ruices - U1023033' -> 'Oficentro Los Ruices'."""
+    import re
+
+    n = re.sub(r"\s+-\s+U\d+.*$", "", nombre or "").strip()
+    n = re.sub(r"\s+-\s+K$", "", n).strip()
+    if codigo and n.upper().startswith(codigo.upper()):
+        n = n[len(codigo):].lstrip(" -–").strip()
+    return n or codigo
+
+
+def maquinas_activas() -> List[Dict[str, Any]]:
+    """Máquinas que el cliente puede elegir en /reclamo (snacks activas, por prefijo)."""
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from epay_mcp import es_snack
+
+    salida = []
+    for m in MCPSync.maquinas_definidas():
+        codigo = (m.get("codigo") or "").strip().upper()
+        nombre = (m.get("nombre") or "").strip()
+        if not codigo or m.get("maquina_id") is None:
+            continue
+        if nombre.upper().startswith("INACTIVO"):
+            continue
+        if PREFIJOS_SELECTOR and not any(codigo.startswith(p) for p in PREFIJOS_SELECTOR):
+            continue
+        if not es_snack(codigo, nombre):
+            continue
+        salida.append({"maquina_id": int(m["maquina_id"]), "codigo": codigo.split("-")[0],
+                       "nombre": _nombre_publico(codigo.split("-")[0], nombre)})
+    import unicodedata
+
+    def _orden(x):  # alfabético ignorando acentos ("Clínica Ávila" junto a "Clínica Aa...")
+        return unicodedata.normalize("NFKD", x["nombre"]).encode("ascii", "ignore").decode().lower()
+
+    salida.sort(key=_orden)
+    return salida
 
 
 def _parse_ventana_dt(cadena: str) -> Optional[datetime]:
