@@ -70,7 +70,9 @@ pero se multiplican las consultas a ePay.) Tras un reinicio, los reclamos
 | `RECLAMO_VENTANA_MIN`     | `10`    | minutos antes del reclamo en los que se busca el cobro |
 | `RECLAMO_POLL_S`          | `10`    | cada cuánto se consulta ePay |
 | `RECLAMO_TIMEOUT_S`       | `720`   | tiempo total de búsqueda antes de dar NO_ENCONTRADO |
-| `RECLAMO_ESTADOS`         | `sin_despacho` | estados de `cobros_maquina` que se reembolsan (coma) |
+| `RECLAMO_ESTADOS`         | `*`     | estados de `cobros_maquina` que se reembolsan (coma). `*` = cualquiera; `sin_despacho` = solo cobros sin venta |
+| `RECLAMO_TOLERANCIA_BS`   | `0.01`  | diferencia máxima entre el cobro y la suma de los productos |
+| `RECLAMO_MAX_ITEMS`       | `10`    | máximo de productos por reclamo |
 | `RECLAMOS_POR_DISPOSITIVO`| `3`     | tope de reclamos/día por dispositivo |
 | `RECLAMOS_POR_IP`         | `5`     | tope de reclamos/día por IP |
 | `GIFTCARD_MAX_BS`         | `10000` | tope Bs/día reembolsados **por usuario** (device-id) |
@@ -103,12 +105,15 @@ y `qrs/manifesto_qrs.csv` (codigo, maquina_id, nombre, url, archivo).
 
 1. Se escanea el QR → `GET /q/{maquina_id}`.
 2. La persona elige **"La máquina no despachó mi producto"**.
-3. Ve los productos **en stock** de ESA máquina (planograma ePay, cache 60 s).
-4. Confirma producto + monto (prellenado con el precio del planograma, editable).
+3. Ve los productos **en stock** de ESA máquina (planograma ePay, cache 60 s) y
+   marca todos los que pagó (con cantidad, para compras de carrito).
+4. Confirma: el **total lo calcula el servidor** con los precios del planograma
+   (no se acepta un monto escrito por el usuario).
 5. `POST /api/reclamo` → un fondo consulta `cobros_maquina` cada `RECLAMO_POLL_S` s.
-6. **Match** = cobro con estado reembolsable (`sin_despacho`), misma máquina,
-   mismo producto (MDB), mismo monto, dentro de la ventana y **sin reclamar**
-   (claim único por `tx_key` UNIQUE).
+6. **Match** = cobro de la misma máquina, por el **mismo monto** que la suma de
+   los productos, dentro de los `RECLAMO_VENTANA_MIN` minutos previos al reclamo
+   y **sin reclamar** (claim único por `tx_key` UNIQUE). Con un solo producto
+   además tiene que coincidir su MDB; con varios, solo el monto.
 7. `EMITIDO` → se muestra el código + QR (sobrevive a recargar la página).
 8. Sin match en `RECLAMO_TIMEOUT_S` → `NO_ENCONTRADO` (reintenta o habla con soporte).
 
@@ -121,7 +126,7 @@ Estados: `PENDIENTE`, `EMITIDO`, `NO_ENCONTRADO`, `AMBIGUO`, `BLOQUEADO`,
 |---|---|---|
 | GET  | `/q/{maquina_id}` | página móvil |
 | GET  | `/api/maquina/{id}` | productos en stock |
-| POST | `/api/reclamo` | crea el reclamo (header `X-Device-Id`) |
+| POST | `/api/reclamo` | crea el reclamo: `{"maquina_id":10357,"items":[{"mdb":"000b","cantidad":2}]}` (header `X-Device-Id`) |
 | GET  | `/api/reclamo/{id}` | estado (solo el dispositivo que lo creó) |
 | GET  | `/api/reclamo/{id}/qr` | PNG del código (solo el dispositivo que lo creó) |
 | POST | `/api/reclamo/{id}/cancelar` | cancela si aún no se reservó un cobro |
@@ -131,8 +136,15 @@ Estados: `PENDIENTE`, `EMITIDO`, `NO_ENCONTRADO`, `AMBIGUO`, `BLOQUEADO`,
 
 ## Anti-fraude
 
-- Solo se reembolsan cobros que ePay marca `sin_despacho`: una compra que sí
-  salió de la máquina **no** genera gift card.
+> **Política temporal (por defecto `RECLAMO_ESTADOS=*`):** se emite aunque el
+> cobro figure como `despachado`. Quien compró puede reclamar su propia compra
+> aunque sí la haya recibido; lo único que lo frena son los topes de abajo.
+> Cada reclamo guarda `estado_cobro` para medir después cuántas tarjetas se
+> dieron por cobros despachados (`/api/admin/reclamos`). Para volver al modo
+> estricto: `RECLAMO_ESTADOS=sin_despacho`.
+
+- El monto sale del planograma, no del usuario: no se puede escribir el monto
+  del cobro de otra persona.
 - id de dispositivo (`localStorage`) + límite diario; tope por IP (tomada del
   proxy de confianza, no del valor que manda el cliente).
 - Tope monetario: Bs reembolsados/día por usuario y por IP; al superarlo el

@@ -86,11 +86,16 @@ app = FastAPI(title="Vendu - Reclamo de maquina", version="0.2.0", lifespan=life
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
 
-class ReclamoIn(BaseModel):
-    maquina_id: int = Field(gt=0)
+class ItemIn(BaseModel):
     mdb: str = Field(min_length=1, max_length=16)
-    producto: str = Field(default="", max_length=200)
-    monto: float | None = Field(default=None, gt=0, lt=10_000_000)
+    cantidad: int = Field(default=1, ge=1, le=10)
+
+
+class ReclamoIn(BaseModel):
+    """Productos que la persona pago. El monto lo calcula el servidor con los
+    precios del planograma (no se acepta un monto escrito por el usuario)."""
+    maquina_id: int = Field(gt=0)
+    items: list[ItemIn] = Field(min_length=1, max_length=10)
 
 
 def _device_id(req: Request) -> str:
@@ -158,22 +163,10 @@ def info_maquina(maquina_id: int):
         raise HTTPException(404, "Maquina inexistente")
     try:
         pg = ms.MCPSync.planograma(maquina_id)
+        vistos = ms.productos_en_stock(maquina_id)
     except Exception as e:
         log.warning("planograma(%s) fallo: %s", maquina_id, e)
         raise HTTPException(502, "No pudimos consultar la maquina. Intenta de nuevo en unos segundos.")
-    vistos: dict[str, dict] = {}
-    for s in pg.get("slots", []):
-        nombre = (s.get("nombre") or "").strip()
-        mdb = (s.get("seleccion") or "").lower()
-        cant = s.get("cantidad") or 0
-        if not nombre or not mdb or cant <= 0:
-            continue
-        vistos[mdb] = {
-            "mdb": mdb,
-            "nombre": nombre,
-            "precio_bs": round(s.get("precio_bs") or 0, 2),
-            "stock": int(cant),
-        }
     return {
         "maquina_id": pg.get("maquina_id") or maquina_id,
         "nombre": pg.get("nombre") or "",
@@ -185,15 +178,13 @@ def info_maquina(maquina_id: int):
 async def crear_reclamo(body: ReclamoIn, req: Request):
     device_id = _device_id(req)
     ip = _ip(req)
-    res = await asyncio.to_thread(
-        ms.crear_reclamo,
-        body.maquina_id, body.mdb, body.producto or body.mdb, body.monto, device_id, ip,
-    )
+    pedido = [(it.mdb, it.cantidad) for it in body.items]
+    res = await asyncio.to_thread(ms.crear_reclamo, body.maquina_id, pedido, device_id, ip)
     if not res.get("ok"):
-        raise HTTPException(429, res.get("error", "No se pudo crear el reclamo"))
+        raise HTTPException(res.get("status", 400), res.get("error", "No se pudo crear el reclamo"))
     claim_id = res["claim_id"]
     _lanzar_poll(claim_id)
-    return {"ok": True, "claim_id": claim_id}
+    return {"ok": True, "claim_id": claim_id, "monto": res["monto"], "producto": res["producto"]}
 
 
 @app.get("/api/reclamo/{claim_id}")
@@ -205,6 +196,7 @@ def ver_reclamo(claim_id: int, req: Request):
         "producto": estado["producto"],
         "state": estado["state"],
         "terminal": estado["terminal"],
+        "monto": estado["monto"],
         "monto_real": estado["monto_real"],
         "mensaje": estado["mensaje"],
         "gift_code": estado["gift_code"] if estado["state"] == "EMITIDO" else None,

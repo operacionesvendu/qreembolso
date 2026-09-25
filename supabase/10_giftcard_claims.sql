@@ -18,12 +18,15 @@ CREATE TABLE IF NOT EXISTS vendu.giftcard_claims (
     device_id   TEXT         NOT NULL,
     ip          TEXT,
     tx_key      TEXT UNIQUE,
+    estado_cobro TEXT,              -- estado del cobro en cobros_maquina al emitir
     state       TEXT         NOT NULL DEFAULT 'PENDIENTE',
     gift_code   TEXT,
     mensaje     TEXT,
     created_at  timestamptz  NOT NULL DEFAULT now(),
     updated_at  timestamptz
 );
+
+ALTER TABLE vendu.giftcard_claims ADD COLUMN IF NOT EXISTS estado_cobro TEXT;
 
 -- Estados validos (se recrea el CHECK para sumar CANCELADO en bases viejas)
 ALTER TABLE vendu.giftcard_claims DROP CONSTRAINT IF EXISTS giftcard_claims_state_check;
