@@ -67,6 +67,25 @@ def _fecha_vence(valor: str | None = None, hoy: date | None = None) -> str:
     return (hoy + timedelta(days=365)).isoformat()
 
 
+def _ref_corta(tx_key: str) -> str:
+    """Clave de idempotencia compacta y ASCII para el portal (mismo cobro -> misma ref)."""
+    import hashlib
+
+    return "c" + hashlib.sha1(tx_key.encode("utf-8")).hexdigest()[:12]
+
+
+def _descripcion(contexto: Dict[str, Any]) -> str:
+    """Descripción corta y ASCII para reportegift.php.
+
+    En la prueba en vivo el portal NO creó la tarjeta cuando la descripción
+    tenía ~140 caracteres, una tilde y una coma (dos productos); la de un
+    producto (95 caracteres, ASCII) sí se creó. El detalle de productos queda
+    en la base del bot (claims / emisiones), no hace falta en el portal.
+    """
+    texto = f"Reembolso QR {contexto.get('claim_id', '')} maq {contexto.get('maquina_id', '')}"
+    return re.sub(r"[^A-Za-z0-9 #:._-]", "", texto).strip()[:60]
+
+
 def _emitir_via_mcp(contexto: Dict[str, Any]) -> str:
     """Crea la gift card en el portal ePay a traves de la tool `crear_gift_card`."""
     from .match_service import MCPSync
@@ -75,12 +94,11 @@ def _emitir_via_mcp(contexto: Dict[str, Any]) -> str:
     if not monto:
         raise RuntimeError("Monto de la venta no disponible para emitir gift card")
     res = MCPSync.call("crear_gift_card", {
-        "descripcion": f"Reembolso QR #{contexto.get('claim_id', '')} "
-                       f"maq {contexto.get('maquina_id', '')} {contexto.get('producto') or ''}".strip(),
+        "descripcion": _descripcion(contexto),
         "monto": round(float(monto), 2),
         "vence": _fecha_vence(),
         # idempotencia en el MCP: el mismo cobro (tx_key) nunca crea dos tarjetas
-        "ref": str(contexto.get("referencia") or ""),
+        "ref": _ref_corta(str(contexto.get("referencia") or "")),
         "unico": True,
         "confirmar": True,
     })
