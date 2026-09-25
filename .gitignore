@@ -5,3 +5,4 @@ venv/
 *.db
 qrs/
 .env
+.pytest_cache/
