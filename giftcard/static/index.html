@@ -85,10 +85,9 @@
   .buscar svg{position:absolute; left:14px; top:50%; transform:translateY(-50%); color:var(--texto-2);}
   .grid{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px;}
   .prod-wrap{position:relative;}
-  .prod{width:100%; height:100%; min-height:92px; border:2px solid var(--linea); border-radius:14px; padding:12px 38px 12px 12px; background:var(--blanco);
+  .prod{width:100%; height:100%; min-height:76px; border:2px solid var(--linea); border-radius:14px; padding:12px 38px 12px 12px; background:var(--blanco);
         text-align:left; cursor:pointer; display:flex; flex-direction:column; justify-content:space-between; gap:8px;}
   .prod b{font-size:14px; line-height:1.25; font-weight:600;}
-  .prod .precio{font-size:14px; font-weight:800;}
   .prod.sel{border-color:var(--negro); box-shadow:inset 0 0 0 1px var(--negro);}
   .prod .qty{position:absolute; top:8px; right:8px; min-width:26px; height:26px; padding:0 7px; border-radius:99px; background:var(--amarillo); color:var(--negro);
              font-size:13px; font-weight:800; display:grid; place-items:center;}
@@ -193,7 +192,7 @@
       <h2>Así funciona</h2>
       <ol class="pasos">
         <li><div><b>Elige lo que compraste</b><span>Toca cada producto que pagaste en esta compra.</span></div></li>
-        <li><div><b>Confirma el total</b><span>Lo calculamos con los precios de esta máquina.</span></div></li>
+        <li><div><b>Confirma tu compra</b><span>Revisa que estén todos los productos que pagaste.</span></div></li>
         <li><div><b>Recibe tu saldo</b><span>Buscamos tu pago y te damos un código para usar en cualquier máquina vendu.</span></div></li>
       </ol>
       <div class="aviso">
@@ -225,10 +224,9 @@
       <h2>Confirma tu compra</h2>
       <p class="lead" id="confirmar-maquina"></p>
       <ul class="items" id="resumen-items"></ul>
-      <div class="total"><span>Total pagado</span><b id="resumen-total"></b></div>
       <div class="aviso">
         <svg width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.5"/></svg>
-        <span>Buscaremos un pago por este <b>monto exacto</b> en esta máquina.</span>
+        <span>Revisa que estén <b>todos</b> los productos que pagaste en esta compra.</span>
       </div>
       <button class="btn primario" id="btn-confirmar" onclick="confirmar()">Confirmar mi compra</button>
       <button class="btn suave" onclick="cargarProductos()">Cambiar productos</button>
@@ -353,7 +351,6 @@ function cargarMaquina(){
 }
 
 function itemsCarrito(){ return Object.values(CART).filter(x=>x.qty>0); }
-function totalCarrito(){ return itemsCarrito().reduce((s,x)=>s + x.p.precio_bs*x.qty, 0); }
 function cantCarrito(){ return itemsCarrito().reduce((s,x)=>s + x.qty, 0); }
 
 function cargarProductos(){
@@ -420,7 +417,7 @@ function pintar(){
     if(!p) return;
     const qty = CART[p.mdb] ? CART[p.mdb].qty : 0;
     const b = w.querySelector('.prod');
-    b.innerHTML = '<b>'+esc(p.nombre)+'</b><span class="precio">Bs '+fmt(p.precio_bs)+'</span>'
+    b.innerHTML = '<b>'+esc(p.nombre)+'</b>'
       + (qty ? '<span class="qty">'+qty+'</span>' : '');
     b.classList.toggle('sel', qty>0);
     b.setAttribute('aria-pressed', qty>0 ? 'true' : 'false');
@@ -428,7 +425,7 @@ function pintar(){
   });
   const n = cantCarrito();
   $('carrito').hidden = n===0;
-  $('carrito-txt').innerHTML = n ? n+' producto'+(n>1?'s':'')+'<b>Bs '+fmt(totalCarrito())+'</b>' : '';
+  $('carrito-txt').innerHTML = n ? 'Seleccionaste<b>'+n+' producto'+(n>1?'s':'')+'</b>' : '';
 }
 
 function goConfirmar(){
@@ -436,9 +433,8 @@ function goConfirmar(){
   if(!items.length){ toast('Elige al menos un producto'); return; }
   $('confirmar-maquina').textContent = MAQUINA.nombre ? 'En '+(MAQUINA.codigo ? MAQUINA.codigo+' · ' : '')+MAQUINA.nombre : '';
   $('resumen-items').innerHTML = items.map(x=>
-    '<li><span>'+esc(x.p.nombre)+(x.qty>1?' <b>×'+x.qty+'</b>':'')+'</span><span>Bs '+fmt(x.p.precio_bs*x.qty)+'</span></li>'
+    '<li><span>'+esc(x.p.nombre)+'</span><span>×'+x.qty+'</span></li>'
   ).join('');
-  $('resumen-total').textContent = 'Bs '+fmt(totalCarrito());
   $('btn-confirmar').disabled = false;
   show('step-confirmar');
 }
@@ -463,7 +459,7 @@ function confirmar(){
 function esperar(claimId, producto, monto, desde){
   CLAIM_ID = claimId;
   show('step-buscando');
-  $('buscando-txt').textContent = (producto || 'Tu compra') + (monto ? ' · Bs '+fmt(monto) : '');
+  $('buscando-txt').textContent = producto || 'Tu compra';
   relojInicio = desde || Date.now();
   clearInterval(relojTimer);
   const tic = ()=>{ const s=Math.max(0, Math.floor((Date.now()-relojInicio)/1000)); $('reloj').textContent = Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); };
