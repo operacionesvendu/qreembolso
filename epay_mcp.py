@@ -113,6 +113,14 @@ class ErrorMCP(Exception):
     """Error de negocio reportado por una tool del MCP."""
 
 
+def _sesion_invalida(status: int, error: Optional[Dict[str, Any]]) -> bool:
+    """El MCP perdió nuestra sesión (TTL vencido o el servidor se reinició)."""
+    msg = str((error or {}).get("message") or "").lower()
+    if "sesi" in msg or "session" in msg:
+        return True
+    return status in (400, 404) and not msg
+
+
 class EpayMCP:
     """Cliente MCP con sesión reutilizable y reconexión automática."""
 
@@ -235,44 +243,50 @@ class EpayMCP:
 
     # ------------------------------------------------------------------- tools
 
+    def _rpc(self, metodo: str, params: Dict[str, Any], etiqueta: str) -> Dict[str, Any]:
+        """POST JSON-RPC. Si el MCP ya no reconoce la sesión, reconecta y reintenta.
+
+        Las respuestas llegan como SSE (`data: {...}`) o como JSON plano (p. ej.
+        los errores HTTP 400 de sesión); se aceptan ambas.
+        """
+        for intento in (1, 2):
+            if self._session is None or not self._sid:
+                self.connect()
+            resp = None
+            for i in range(1, self.retries + 1):
+                try:
+                    resp = self._post({"jsonrpc": "2.0", "id": 2, "method": metodo, "params": params})
+                    break
+                except RuntimeError:
+                    if i == self.retries:
+                        raise
+                    self.connect()
+            texto = resp.content.decode("utf-8", errors="replace") if resp is not None else ""
+            cuerpo = (_sse_payload(texto) or texto).strip()
+            try:
+                payload = json.loads(cuerpo) if cuerpo else {}
+            except json.JSONDecodeError as e:
+                log.error("Respuesta MCP corrupta (%s): %s", etiqueta, texto[:500])
+                raise ErrorMCP(f"Respuesta MCP no parseable para {etiqueta}: {e}")
+            error = payload.get("error") if isinstance(payload, dict) else None
+            status = resp.status_code if resp is not None else 0
+            if intento == 1 and _sesion_invalida(status, error):
+                log.warning("Sesión MCP no válida (%s, HTTP %s): reconectando", etiqueta, status)
+                self._sid = None
+                continue
+            if error:
+                raise ErrorMCP(f"MCP respondió error en {etiqueta}: {error.get('message') or error}")
+            return payload
+        raise ErrorMCP(f"MCP rechazó la sesión dos veces seguidas ({etiqueta})")
+
     def list_tools(self) -> List[str]:
         """Nombres de las tools que esta conexión (token) puede usar."""
-        if self._session is None or not self._sid:
-            self.connect()
-        resp = self._post({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}})
-        texto = resp.content.decode("utf-8", errors="replace")
-        payload = json.loads(_sse_payload(texto) or texto or "{}")
+        payload = self._rpc("tools/list", {}, "tools/list")
         return [t.get("name", "") for t in (payload.get("result") or {}).get("tools", [])]
 
     def call_tool(self, nombre: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
         """Ejecuta una tool y devuelve el JSON (application/json) del resultado."""
-        if self._session is None or not self._sid:
-            self.connect()
-        # El texto puede llegar en varias líneas `data:`; SSE las concatena.
-        resp = None
-        for intento in range(1, self.retries + 1):
-            try:
-                resp = self._post(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "method": "tools/call",
-                        "params": {"name": nombre, "arguments": arguments or {}},
-                    }
-                )
-                break
-            except RuntimeError:
-                if intento == self.retries:
-                    raise
-                self.connect()
-        if resp is None:
-            raise RuntimeError("Sin respuesta MCP")
-        texto = resp.content.decode("utf-8", errors="replace")
-        try:
-            payload = json.loads(_sse_payload(texto))
-        except json.JSONDecodeError as e:
-            log.error("Respuesta MCP corrupta (%s): %s", nombre, texto[:500])
-            raise ErrorMCP(f"Respuesta MCP no parseable para {nombre}: {e}")
+        payload = self._rpc("tools/call", {"name": nombre, "arguments": arguments or {}}, nombre)
         result = payload.get("result", {})
         if result.get("isError"):
             detalle = ""
