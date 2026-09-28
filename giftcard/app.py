@@ -54,6 +54,20 @@ INDEX = STATIC / "index.html"
 WHATSAPP = os.getenv("WHATSAPP_NUMBER", "").strip()
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "").strip()
 TRUSTED_PROXIES = int(os.getenv("TRUSTED_PROXIES", "1"))
+KEEPALIVE_S = int(os.getenv("MCP_KEEPALIVE_S", "240"))
+
+
+async def _keepalive() -> None:
+    """Consulta el MCP cada KEEPALIVE_S para que la sesión no venza por inactividad
+    (y para que un corte del MCP aparezca en el log apenas ocurre)."""
+    while True:
+        await asyncio.sleep(KEEPALIVE_S)
+        try:
+            ok = await asyncio.to_thread(ms.MCPSync.ping)
+            if ok is None:
+                log.error("Keepalive: el MCP no respondió")
+        except Exception as e:
+            log.error("Keepalive MCP falló: %s", e)
 
 _reclamos_en_curso: dict[int, asyncio.Task] = {}
 
@@ -79,7 +93,10 @@ async def lifespan(app: FastAPI):
         log.info("Reanudados %d reclamos pendientes", len(ids))
     # Aviso temprano en el log si el token no sirve para emitir.
     asyncio.get_running_loop().run_in_executor(None, ms.MCPSync.puede_emitir)
+    vigilante = asyncio.create_task(_keepalive()) if KEEPALIVE_S > 0 else None
     yield
+    if vigilante:
+        vigilante.cancel()
     for t in list(_reclamos_en_curso.values()):
         t.cancel()
 

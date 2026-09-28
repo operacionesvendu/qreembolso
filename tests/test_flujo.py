@@ -409,6 +409,26 @@ def test_selector_de_maquinas(fake):
     ]
 
 
+def test_mcp_reconecta_si_la_sesion_vencio(monkeypatch):
+    import epay_mcp
+
+    class Resp:
+        def __init__(self, status, texto):
+            self.status_code, self.content = status, texto.encode()
+
+    respuestas = [
+        Resp(400, '{"jsonrpc":"2.0","error":{"code":-32000,"message":"Bad Request: sesión inválida o ausente"},"id":null}'),
+        Resp(200, 'event: message\ndata: {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"crear_gift_card"}]}}'),
+    ]
+    conexiones = []
+    m = epay_mcp.EpayMCP(token="t")
+    monkeypatch.setattr(m, "connect", lambda: (conexiones.append(1), setattr(m, "_sid", "nueva"), setattr(m, "_session", object()))[-1])
+    monkeypatch.setattr(m, "_post", lambda payload, retries=None: respuestas.pop(0))
+    m._session, m._sid = object(), "vieja"
+    assert m.list_tools() == ["crear_gift_card"]
+    assert conexiones == [1]  # reconectó una vez, sin reinicio
+
+
 def test_ip_usa_proxy_de_confianza():
     class R:
         headers = {"X-Forwarded-For": "6.6.6.6, 203.0.113.9"}

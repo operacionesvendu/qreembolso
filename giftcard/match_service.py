@@ -500,6 +500,12 @@ class MCPSync:
     _emision: Optional[tuple] = None  # (timestamp, bool)
 
     @classmethod
+    def ping(cls) -> Optional[bool]:
+        """Keepalive: mantiene viva la sesión MCP y refresca el permiso de emisión."""
+        cls._emision = None
+        return cls.puede_emitir()
+
+    @classmethod
     def puede_emitir(cls) -> Optional[bool]:
         """True si el token conectado ve crear_gift_card (cache 5 min); None si no se pudo saber."""
         ahora = _now().timestamp()
