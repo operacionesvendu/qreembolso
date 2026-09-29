@@ -173,6 +173,12 @@ def healthz():
             "emision": ms.MCPSync.puede_emitir()}
 
 
+@app.get("/api/config")
+def config_publica():
+    """Parámetros que la página muestra al cliente."""
+    return {"ventana_min": ms.VENTANA_MIN, "max_items": ms.MAX_ITEMS}
+
+
 @app.get("/reclamo")
 def pagina_selector():
     """Entrada general (QR/Linktree compartido): la persona elige su máquina."""
