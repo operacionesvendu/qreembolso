@@ -29,16 +29,17 @@ from giftcard import match_service as ms
 
 CARACAS = timezone(-timedelta(hours=4))
 MAQ = 10357
+BDV1, BDV2 = 10579, 10576
 
 
 class FakeMCP:
     def __init__(self):
-        self.cobros: list[dict] = []
+        self.cobros: dict = {}
         self.emitidas: list[dict] = []
 
-    def cobro(self, mdb="000b", monto=150.0, estado="sin_despacho", hace_s=30, entregados=()):
+    def cobro(self, mdb="000b", monto=150.0, estado="sin_despacho", hace_s=30, entregados=(), maq=MAQ):
         dt = (datetime.now(timezone.utc) - timedelta(seconds=hace_s)).astimezone(CARACAS)
-        self.cobros.append({
+        self.cobros.setdefault(str(maq), []).append({
             "fecha": dt.strftime("%Y-%m-%d %H:%M:%S"),
             "respuesta": f"{mdb} OK",
             "monto": f"{monto:,.2f}",
@@ -50,14 +51,18 @@ class FakeMCP:
 
     def call(self, tool, args):
         if tool == "cobros_maquina":
-            assert args["maquina_id"] == str(MAQ)
-            return {"cobros": list(self.cobros)}
+            return {"cobros": list(self.cobros.get(args["maquina_id"], []))}
         if tool == "crear_gift_card":
             self.emitidas.append(args)
             return {"gift_cards_nuevas": [{"col_0": f"GC{len(self.emitidas):04d}"}]}
         raise AssertionError(tool)
 
     def planograma(self, maquina_id):
+        if maquina_id == BDV2:  # segunda máquina de un grupo: comparte Coca-Cola, agrega Pepsi
+            return {"maquina_id": maquina_id, "nombre": "V76 - BDV 2 - K", "slots": [
+                {"nombre": "Coca-Cola", "seleccion": "0c01", "cantidad": 4, "precio_bs": 120.5, "producto_id": 13},
+                {"nombre": "Pepsi", "seleccion": "0c02", "cantidad": 4, "precio_bs": 110.0, "producto_id": 14},
+            ]}
         return {
             "maquina_id": maquina_id,
             "nombre": "V01 Prueba",
@@ -82,6 +87,8 @@ def fake(monkeypatch):
         {"maquina_id": 10512, "codigo": "V56-HUMBLT", "nombre": "INACTIVO - V56 - Comedor Hotel Humboldt"},
         {"maquina_id": 10531, "codigo": "C03-CMDLT", "nombre": "C03 - Café CMDLT - U1009312"},
         {"maquina_id": 10577, "codigo": "V28-EUROS2", "nombre": "V28 - Eurobuilding S2 - K"},
+        {"maquina_id": BDV1, "codigo": "V75-BDV1", "nombre": "V75 - BDV 1 - U1024365 - K"},
+        {"maquina_id": BDV2, "codigo": "V76-BDV2", "nombre": "V76 - BDV 2 - K"},
     ]))
     with ms._db() as con:
         for t in ("emisiones", "claims", "daily_limits"):
@@ -402,11 +409,38 @@ def test_selector_de_maquinas(fake):
         assert c.get("/", follow_redirects=False).headers["location"] == "/reclamo"
         maqs = c.get("/api/maquinas").json()["maquinas"]
     # sin inactivas ni café; nombre limpio y ordenado
-    assert maqs == [
-        {"maquina_id": 10577, "codigo": "V28", "nombre": "Eurobuilding S2"},
-        {"maquina_id": 10505, "codigo": "V11", "nombre": "Oficentro Los Ruices"},
-        {"maquina_id": 10356, "codigo": "V46", "nombre": "Oficentro RONDO"},
+    assert [(m["id"], m["nombre"]) for m in maqs] == [
+        (f"{BDV1}-{BDV2}", "BDV"),                 # BDV 1 + BDV 2 unidas
+        ("10577", "Eurobuilding S2"),
+        ("10505", "Oficentro Los Ruices"),
+        ("10356", "Oficentro RONDO"),
     ]
+
+
+def test_grupo_une_productos_y_busca_en_ambas(fake, monkeypatch):
+    monkeypatch.setenv("EPAY_MCP_TOKEN", "t")  # emitir por el MCP falso
+    punto = f"{BDV1}-{BDV2}"
+    with TestClient(app_mod.app) as c:
+        assert c.get(f"/q/{punto}").status_code == 200
+        info = c.get(f"/api/maquina/{punto}").json()
+        assert info["nombre"] == "BDV"
+        nombres = [p["nombre"] for p in info["productos"]]
+        assert nombres.count("Coca-Cola") == 1 and "Pepsi" in nombres and "Doritos" in nombres
+        pepsi = next(p for p in info["productos"] if p["nombre"] == "Pepsi")
+        # la compra fue en BDV 2
+        fake.cobro(mdb="0c02", monto=110.0, maq=BDV2)
+        h = {"X-Device-Id": _device()}
+        r = c.post("/api/reclamo", headers=h, json={"maquina": punto, "items": [{"mdb": pepsi["mdb"]}]})
+        assert r.status_code == 200, r.text
+        cid = r.json()["claim_id"]
+    assert ms.intento_match(cid) == "EMITIDO"
+    assert fake.emitidas[-1]["descripcion"].endswith(f"maq {BDV2}")
+
+
+def test_punto_invalido(fake):
+    with TestClient(app_mod.app) as c:
+        assert c.get("/q/abc").status_code == 404
+        assert c.get("/api/maquina/1-2-3-4-5").status_code == 404
 
 
 def test_mcp_reconecta_si_la_sesion_vencio(monkeypatch):

@@ -84,6 +84,7 @@ pero se multiplican las consultas a ePay.) Tras un reinicio, los reclamos
 | `GIFTCARD_ALLOW_STUB`     | —       | `1` = sin credenciales emite `STUB-XXXX` (solo pruebas) |
 | `WHATSAPP_NUMBER`         | —       | número para el botón de soporte |
 | `ADMIN_TOKEN`             | —       | habilita `GET /api/admin/reclamos` |
+| `RECLAMO_GRUPOS`          | `BDV=V75,V76;RS Planta Guatire=V58,V59;Tío Ammi=V62,V66` | máquinas del mismo lugar que se muestran como una sola en `/reclamo`; el reclamo une sus productos y busca el cobro en todas |
 | `MCP_KEEPALIVE_S`         | `240`   | cada cuántos segundos se consulta el MCP para mantener viva la sesión (`0` = apagado) |
 | `TRUSTED_PROXIES`         | `1`     | proxies delante de la app (para leer la IP real de `X-Forwarded-For`) |
 

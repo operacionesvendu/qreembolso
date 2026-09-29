@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS vendu.giftcard_claims (
 ALTER TABLE vendu.giftcard_claims ADD COLUMN IF NOT EXISTS estado_cobro TEXT;
 -- productos reclamados (JSON: nombre, precio_bs, cantidad, producto_ids)
 ALTER TABLE vendu.giftcard_claims ADD COLUMN IF NOT EXISTS items TEXT;
+-- máquinas donde se busca el cobro (grupo del selector, p. ej. "10579,10576")
+ALTER TABLE vendu.giftcard_claims ADD COLUMN IF NOT EXISTS maquinas TEXT;
 
 -- Estados validos (se recrea el CHECK para sumar CANCELADO en bases viejas)
 ALTER TABLE vendu.giftcard_claims DROP CONSTRAINT IF EXISTS giftcard_claims_state_check;

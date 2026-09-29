@@ -62,6 +62,45 @@ TOLERANCIA_BS = float(os.getenv("RECLAMO_TOLERANCIA_BS", "0.01"))
 MAX_ITEMS = int(os.getenv("RECLAMO_MAX_ITEMS", "10"))
 # Prefijos de código de las máquinas que aparecen en el selector de /reclamo.
 PREFIJOS_SELECTOR = [p.strip().upper() for p in os.getenv("RECLAMO_PREFIJOS", "V").split(",") if p.strip()]
+# Máquinas del mismo lugar que se muestran como UNA sola en /reclamo:
+# "Nombre=COD1,COD2;Otro=COD3,COD4". El reclamo busca el cobro en todas.
+GRUPOS_DEFAULT = "BDV=V75,V76;RS Planta Guatire=V58,V59;Tío Ammi=V62,V66"
+
+
+def _parse_grupos(txt: str) -> List[tuple]:
+    grupos = []
+    for parte in (txt or "").split(";"):
+        if "=" not in parte:
+            continue
+        nombre, codigos = parte.split("=", 1)
+        cods = [c.strip().upper() for c in codigos.split(",") if c.strip()]
+        if nombre.strip() and cods:
+            grupos.append((nombre.strip(), cods))
+    return grupos
+
+
+GRUPOS = _parse_grupos(os.getenv("RECLAMO_GRUPOS", GRUPOS_DEFAULT))
+MAX_MAQUINAS_PUNTO = 4
+
+
+def parse_punto(clave: Any) -> List[int]:
+    """'10579-10576' o 10505 -> [ids]. Un "punto" es una máquina o un grupo."""
+    import re
+
+    if isinstance(clave, int):
+        ids = [clave]
+    elif isinstance(clave, (list, tuple)):
+        ids = [int(x) for x in clave]
+    else:
+        txt = str(clave or "").strip()
+        if not re.fullmatch(r"\d{1,9}(-\d{1,9}){0,%d}" % (MAX_MAQUINAS_PUNTO - 1), txt):
+            return []
+        ids = [int(x) for x in txt.split("-")]
+    salida = []
+    for i in ids:
+        if i > 0 and i not in salida:
+            salida.append(i)
+    return salida[:MAX_MAQUINAS_PUNTO]
 # Loguea en cada consulta los cobros vistos (hora, mdb, monto, estado) para
 # diagnosticar por que un reclamo no coincide. No incluye datos personales.
 LOG_COBROS = os.getenv("RECLAMO_LOG_COBROS", "1").strip().lower() in ("1", "true", "si", "yes")
@@ -99,6 +138,7 @@ CREATE TABLE IF NOT EXISTS claims (
     tx_key      TEXT UNIQUE,
     estado_cobro TEXT,
     items       TEXT,
+    maquinas    TEXT,
     state       TEXT    NOT NULL DEFAULT 'PENDIENTE',
     gift_code   TEXT,
     mensaje     TEXT,
@@ -182,7 +222,7 @@ def init_db() -> None:
     with _DB_LOCK:
         con = sqlite3.connect(DB_PATH)
         con.executescript(_SCHEMA_SQLITE)
-        for col in ("estado_cobro", "items"):  # bases creadas antes de esas columnas
+        for col in ("estado_cobro", "items", "maquinas"):  # bases creadas antes de esas columnas
             try:
                 con.execute(f"ALTER TABLE claims ADD COLUMN {col} TEXT")
             except sqlite3.OperationalError:
@@ -328,7 +368,30 @@ def productos_en_stock(maquina_id: int) -> Dict[str, Dict[str, Any]]:
     return vistos
 
 
-def armar_pedido(maquina_id: int, pedido: List[tuple]) -> Dict[str, Any]:
+def productos_en_stock_punto(ids: List[int]) -> Dict[str, Dict[str, Any]]:
+    """Productos de una máquina o de un grupo. En un grupo se unen por nombre + precio;
+    la clave y los MDB llevan el id de la máquina ("10579.0c01")."""
+    if len(ids) == 1:
+        return productos_en_stock(ids[0])
+    vistos: Dict[str, Dict[str, Any]] = {}
+    por_producto: Dict[tuple, str] = {}
+    for mid in ids:
+        for clave, it in productos_en_stock(mid).items():
+            k = (" ".join(it["nombre"].lower().split()), it["precio_bs"])
+            mdbs = [f"{mid}.{m}" for m in it["mdbs"]]
+            if k in por_producto:
+                dest = vistos[por_producto[k]]
+                dest["mdbs"] += [m for m in mdbs if m not in dest["mdbs"]]
+                dest["producto_ids"] += [p for p in it.get("producto_ids", []) if p not in dest["producto_ids"]]
+                dest["stock"] += it["stock"]
+                continue
+            nueva = f"{mid}.{clave}"
+            por_producto[k] = nueva
+            vistos[nueva] = {**it, "mdb": nueva, "mdbs": mdbs, "producto_ids": list(it.get("producto_ids", []))}
+    return vistos
+
+
+def armar_pedido(maquina_id: Any, pedido: List[tuple]) -> Dict[str, Any]:
     """[(mdb, cantidad), ...] -> monto esperado (precios del planograma) + descripcion.
 
     El monto lo calcula el servidor: el usuario no puede escribir un monto
@@ -344,7 +407,7 @@ def armar_pedido(maquina_id: int, pedido: List[tuple]) -> Dict[str, Any]:
     if total_items > MAX_ITEMS:
         return {"ok": False, "status": 400, "error": f"Máximo {MAX_ITEMS} productos por reclamo."}
     try:
-        stock = productos_en_stock(maquina_id)
+        stock = productos_en_stock_punto(parse_punto(maquina_id))
     except Exception as e:
         log.warning("planograma(%s) fallo: %s", maquina_id, e)
         return {"ok": False, "status": 502,
@@ -364,15 +427,18 @@ def armar_pedido(maquina_id: int, pedido: List[tuple]) -> Dict[str, Any]:
 
 
 def crear_reclamo(
-    maquina_id: int,
+    maquina_id: Any,
     pedido: List[tuple],
     device_id: str,
     ip: str,
 ) -> Dict[str, Any]:
+    ids = parse_punto(maquina_id)
+    if not ids:
+        return {"ok": False, "status": 400, "error": "Máquina inválida."}
     bloqueo = check_limites(device_id, ip)
     if bloqueo:
         return {"ok": False, "status": 429, "error": bloqueo}
-    armado = armar_pedido(maquina_id, pedido)
+    armado = armar_pedido(ids, pedido)
     if not armado["ok"]:
         return armado
     with _DB_LOCK:
@@ -380,9 +446,9 @@ def crear_reclamo(
         if bloqueo:
             return {"ok": False, "status": 429, "error": bloqueo}
         row = _one(
-            f"INSERT INTO {T_CLAIMS}(maquina_id, mdb, producto, monto, items, device_id, ip, created_at) "
-            "VALUES(?,?,?,?,?,?,?,?) RETURNING id",
-            (maquina_id, armado["mdb"], armado["producto"], armado["monto"],
+            f"INSERT INTO {T_CLAIMS}(maquina_id, maquinas, mdb, producto, monto, items, device_id, ip, created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?) RETURNING id",
+            (ids[0], ",".join(str(i) for i in ids), armado["mdb"], armado["producto"], armado["monto"],
              json.dumps(armado.get("items") or [], ensure_ascii=False), device_id, ip, _ts(_now())),
         )
         claim_id = int(row["id"])
@@ -586,6 +652,16 @@ def maquinas_activas() -> List[Dict[str, Any]]:
             continue
         salida.append({"maquina_id": int(m["maquina_id"]), "codigo": codigo.split("-")[0],
                        "nombre": _nombre_publico(codigo.split("-")[0], nombre)})
+    for m in salida:
+        m["id"], m["maquinas"] = str(m["maquina_id"]), [m["maquina_id"]]
+    for nombre_grupo, codigos in GRUPOS:
+        miembros = [m for m in salida if m["codigo"] in codigos]
+        if not miembros:
+            continue
+        salida = [m for m in salida if m not in miembros]
+        ids = [m["maquina_id"] for m in miembros]
+        salida.append({"id": "-".join(str(i) for i in ids), "maquinas": ids, "maquina_id": ids[0],
+                       "codigo": ",".join(m["codigo"] for m in miembros), "nombre": nombre_grupo})
     import unicodedata
 
     def _orden(x):  # alfabético ignorando acentos ("Clínica Ávila" junto a "Clínica Aa...")
@@ -593,6 +669,24 @@ def maquinas_activas() -> List[Dict[str, Any]]:
 
     salida.sort(key=_orden)
     return salida
+
+
+def nombre_punto(ids: List[int]) -> str:
+    """Nombre para mostrar de una máquina o grupo ('BDV', 'Oficentro Los Ruices')."""
+    try:
+        for p in maquinas_activas():
+            if p["maquinas"] == ids or (len(ids) == 1 and ids[0] in p["maquinas"] and len(p["maquinas"]) == 1):
+                return p["nombre"]
+        for p in maquinas_activas():
+            if set(ids) & set(p["maquinas"]):
+                return p["nombre"]
+    except Exception as e:
+        log.warning("nombre_punto(%s): %s", ids, e)
+    try:
+        pg = MCPSync.planograma(ids[0])
+        return _nombre_publico("", pg.get("nombre") or "") or f"Máquina {ids[0]}"
+    except Exception:
+        return f"Máquina {ids[0]}"
 
 
 def _parse_ventana_dt(cadena: str) -> Optional[datetime]:
@@ -646,6 +740,7 @@ def _ventas_ventana(maquina_id: int, desde: datetime, hasta: datetime) -> List[D
                 continue
             salida.append({
                 "dt": dt,
+                "maquina_id": int(maquina_id),
                 "mdb": _mdb_de_referencia(fila.get("respuesta") or fila.get("seleccion") or ""),
                 "producto": "",
                 "monto": _float(fila.get("monto")),
@@ -676,24 +771,29 @@ def candidatas(claim_id: int) -> List[Dict[str, Any]]:
     if monto_obj is None:
         return []
     desde = _as_dt(row["created_at"]) - timedelta(minutes=VENTANA_MIN)
-    vistas = _ventas_ventana(int(row["maquina_id"]), desde, _now())
+    ids = parse_punto((row.get("maquinas") or "").replace(",", "-")) or [int(row["maquina_id"])]
+    vistas = []
+    for mid in ids:
+        vistas += _ventas_ventana(mid, desde, _now())
+    vistas.sort(key=lambda v: v["dt"])
     if LOG_COBROS:
         caracas = _zona_caracas()
         log.info(
             "claim %s maq %s busca %.2f Bs mdb=%s | cobros en ventana: %s",
-            claim_id, row["maquina_id"], monto_obj, row["mdb"],
-            [(f"{v['dt'].astimezone(caracas):%H:%M:%S}", v["mdb"], v["monto"], v["estado"]) for v in vistas] or "ninguno",
+            claim_id, ",".join(str(i) for i in ids), monto_obj, row["mdb"],
+            [(f"{v['dt'].astimezone(caracas):%H:%M:%S}", v["maquina_id"], v["mdb"], v["monto"], v["estado"])
+             for v in vistas] or "ninguno",
         )
     ventas = [
         v for v in vistas
         if v["monto"] is not None
         and abs(v["monto"] - monto_obj) <= TOLERANCIA_BS
         and _estado_ok(v["estado"])
-        and (len(grupos) != 1 or v["mdb"] in grupos[0])
+        and (len(grupos) != 1 or v["mdb"] in grupos[0] or f"{v['maquina_id']}.{v['mdb']}" in grupos[0])
     ]
     if not ventas:
         return []
-    claves = [_txkey(int(row["maquina_id"]), v) for v in ventas]
+    claves = [_txkey(v["maquina_id"], v) for v in ventas]
     marcas = ",".join("?" for _ in claves)
     reservadas = {
         r["tx_key"]
@@ -752,7 +852,7 @@ def intento_match(claim_id: int) -> str:
         return "PENDIENTE"
 
     v = ventas[0]
-    key = _txkey(int(row["maquina_id"]), v)
+    key = _txkey(v["maquina_id"], v)
 
     # Reserva atomica: si otro claim gano la carrera, tx_key UNIQUE lo impide.
     try:
@@ -838,7 +938,7 @@ def _emitir_reservado(claim_id: int, row: Dict[str, Any], v: Dict[str, Any], key
     contexto = {
         "referencia": key,
         "claim_id": claim_id,
-        "maquina_id": row["maquina_id"],
+        "maquina_id": v["maquina_id"],
         "mdb": row["mdb"],
         "producto": v["producto"] or row["producto"],
         "monto": monto,
