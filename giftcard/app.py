@@ -113,7 +113,9 @@ class ItemIn(BaseModel):
 class ReclamoIn(BaseModel):
     """Productos que la persona pago. El monto lo calcula el servidor con los
     precios del planograma (no se acepta un monto escrito por el usuario)."""
-    maquina_id: int = Field(gt=0)
+    maquina_id: int | None = Field(default=None, gt=0)
+    # máquina o grupo del selector: "10505" o "10579-10576"
+    maquina: str | None = Field(default=None, max_length=60)
     items: list[ItemIn] = Field(min_length=1, max_length=10)
 
 
@@ -194,24 +196,27 @@ def lista_maquinas():
         raise HTTPException(502, "No pudimos cargar las máquinas. Intenta de nuevo en unos segundos.")
 
 
-@app.get("/q/{maquina_id}")
-def pagina_maquina(maquina_id: int):
+@app.get("/q/{punto}")
+def pagina_maquina(punto: str):
+    if not ms.parse_punto(punto):
+        raise HTTPException(404, "Máquina inexistente")
     return FileResponse(INDEX, headers={"Cache-Control": "no-cache"})
 
 
-@app.get("/api/maquina/{maquina_id}")
-def info_maquina(maquina_id: int):
-    if maquina_id <= 0:
+@app.get("/api/maquina/{punto}")
+def info_maquina(punto: str):
+    ids = ms.parse_punto(punto)
+    if not ids:
         raise HTTPException(404, "Máquina inexistente")
     try:
-        pg = ms.MCPSync.planograma(maquina_id)
-        vistos = ms.productos_en_stock(maquina_id)
+        vistos = ms.productos_en_stock_punto(ids)
     except Exception as e:
-        log.warning("planograma(%s) fallo: %s", maquina_id, e)
+        log.warning("planograma(%s) fallo: %s", punto, e)
         raise HTTPException(502, "No pudimos consultar la máquina. Intenta de nuevo en unos segundos.")
     return {
-        "maquina_id": pg.get("maquina_id") or maquina_id,
-        "nombre": pg.get("nombre") or "",
+        "maquina_id": ids[0],
+        "maquinas": ids,
+        "nombre": ms.nombre_punto(ids),
         "productos": sorted(vistos.values(), key=lambda x: x["nombre"]),
     }
 
@@ -221,7 +226,10 @@ async def crear_reclamo(body: ReclamoIn, req: Request):
     device_id = _device_id(req)
     ip = _ip(req)
     pedido = [(it.mdb, it.cantidad) for it in body.items]
-    res = await asyncio.to_thread(ms.crear_reclamo, body.maquina_id, pedido, device_id, ip)
+    punto = body.maquina or body.maquina_id
+    if not ms.parse_punto(punto):
+        raise HTTPException(400, "Máquina inválida.")
+    res = await asyncio.to_thread(ms.crear_reclamo, punto, pedido, device_id, ip)
     if not res.get("ok"):
         raise HTTPException(res.get("status", 400), res.get("error", "No se pudo crear el reclamo"))
     claim_id = res["claim_id"]
@@ -266,19 +274,14 @@ def codigo_qr(claim_id: int, req: Request):
                     headers={"Cache-Control": "private, no-store"})
 
 
-@app.get("/api/ayuda/{maquina_id}")
-def ayuda(maquina_id: int):
-    nombre = ""
-    if maquina_id > 0:
-        try:
-            pg = ms.MCPSync.planograma(maquina_id)
-            nombre = pg.get("nombre") or ""
-        except Exception:
-            pass
+@app.get("/api/ayuda/{punto}")
+def ayuda(punto: str):
+    ids = ms.parse_punto(punto)
+    nombre = ms.nombre_punto(ids) if ids else ""
     link = ""
     if WHATSAPP:
-        if maquina_id > 0:
-            texto = f"Máquina {maquina_id} ({nombre}): necesito ayuda con un reclamo."
+        if ids:
+            texto = f"Máquina {nombre} ({'/'.join(str(i) for i in ids)}): necesito ayuda con un reclamo."
         else:
             texto = "Hola, necesito ayuda con un reclamo en una máquina vendu."
         texto = urllib.parse.quote(texto)

@@ -169,10 +169,10 @@
 
   <section class="step" id="step-elegir">
     <h2>¿En qué máquina estás?</h2>
-    <p class="lead">Busca el lugar o el código que aparece en la máquina (por ejemplo, <b>V11</b>).</p>
+    <p class="lead">Busca el lugar donde está la máquina (por ejemplo, <b>Oficentro</b>).</p>
     <label class="buscar">
       <svg width="20" height="20" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-      <input id="buscar-maquina" type="search" placeholder="Buscar lugar o código" autocomplete="off" oninput="pintarMaquinas()">
+      <input id="buscar-maquina" type="search" placeholder="Buscar lugar" autocomplete="off" oninput="pintarMaquinas()">
     </label>
     <div class="lista" id="lista-maquinas"></div>
     <button class="btn negro" onclick="goAyuda()">
@@ -281,8 +281,9 @@
 
 <script>
 const path = window.location.pathname;
-const m = /\/q\/(\d+)/.exec(path);
-const MAQUINA_ID = m ? parseInt(m[1],10) : 0;
+const m = /\/q\/(\d+(?:-\d+)*)/.exec(path);
+// Máquina o grupo de máquinas del mismo lugar ("10505" o "10579-10576")
+const MAQUINA_ID = m ? m[1] : '';
 const LS_CLAIM = 'vendu_claim';
 
 function lsGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
@@ -376,12 +377,12 @@ function pintarMaquinas(){
   const q = normalizar($('buscar-maquina').value.trim());
   const vis = MAQUINAS.filter(m=> !q || normalizar(m.codigo+' '+m.nombre).includes(q));
   $('lista-maquinas').innerHTML = vis.length
-    ? vis.map(m=>'<a class="maq" href="/q/'+m.maquina_id+'"><span class="cod">'+esc(m.codigo)+'</span><span class="nom">'+esc(m.nombre)
+    ? vis.map(m=>'<a class="maq" href="/q/'+(m.id||m.maquina_id)+'"><span class="nom">'+esc(m.nombre)
         +'</span><svg width="18" height="18" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></a>').join('')
     : '<p class="vacio">No encontramos esa máquina. Revisa el código pegado en la máquina o habla con una persona.</p>';
 }
 function goAyuda(){ show('step-ayuda'); api('/api/ayuda/'+MAQUINA_ID).then(d=>{
-  $('ayuda-maquina').textContent = MAQUINA.nombre ? 'Máquina: '+(MAQUINA.codigo ? MAQUINA.codigo+' · ' : '')+MAQUINA.nombre : '';
+  $('ayuda-maquina').textContent = MAQUINA.nombre ? 'Máquina: '+MAQUINA.nombre : '';
   $('btn-wa').querySelector('span').textContent = d.whatsapp ? 'Abrir WhatsApp' : 'Soporte no disponible';
   $('btn-wa').disabled = !d.whatsapp;
 }).catch(()=>{}); }
@@ -400,9 +401,7 @@ function cargarMaquina(){
   return api('/api/maquina/'+MAQUINA_ID).then(d=>{
     MAQUINA = partirNombre(d.nombre);
     $('maquina-nombre').textContent = MAQUINA.nombre || ('Máquina '+MAQUINA_ID);
-    const chip = $('maquina-codigo');
-    chip.textContent = MAQUINA.codigo || ('#'+MAQUINA_ID);
-    chip.hidden = false;
+
     return d;
   }).catch(()=>{ $('maquina-nombre').textContent='Máquina '+MAQUINA_ID; });
 }
@@ -488,7 +487,7 @@ function pintar(){
 function goConfirmar(){
   const items = itemsCarrito();
   if(!items.length){ toast('Elige al menos un producto'); return; }
-  $('confirmar-maquina').textContent = MAQUINA.nombre ? 'En '+(MAQUINA.codigo ? MAQUINA.codigo+' · ' : '')+MAQUINA.nombre : '';
+  $('confirmar-maquina').textContent = MAQUINA.nombre ? 'En '+MAQUINA.nombre : '';
   $('resumen-items').innerHTML = items.map(x=>
     '<li><span>'+esc(x.p.nombre)+'</span><span>×'+x.qty+'</span></li>'
   ).join('');
@@ -505,7 +504,7 @@ function confirmar(){
   if(!items.length){ toast('Elige al menos un producto'); return; }
   $('btn-confirmar').disabled = true;
   api('/api/reclamo', {method:'POST', body: JSON.stringify({
-    maquina_id: MAQUINA_ID,
+    maquina: MAQUINA_ID,
     items: items.map(x=>({mdb:x.p.mdb, cantidad:x.qty}))
   })}).then(d=>{
     lsSet(LS_CLAIM, JSON.stringify({id:d.claim_id, maquina:MAQUINA_ID, producto:d.producto, monto:d.monto, t:Date.now()}));
@@ -556,7 +555,7 @@ function mostrarResultado(est){
   const card = $('resultado-card'), b = $('resultado-body');
   if(est.state!=='EMITIDO') lsDel(LS_CLAIM);
   card.classList.toggle('oscura', est.state==='EMITIDO');
-  const ref = '<p class="ref">Reclamo <b>#'+esc(String(est.claim_id))+'</b>'+(MAQUINA.codigo ? ' · '+esc(MAQUINA.codigo) : '')+'</p>';
+  const ref = '<p class="ref">Reclamo <b>#'+esc(String(est.claim_id))+'</b>'+(MAQUINA.nombre ? ' · '+esc(MAQUINA.nombre) : '')+'</p>';
   const btnAyuda = '<button class="btn negro" onclick="goAyuda()">'+ICONOS.wa+'<span>Hablar con una persona</span></button>';
   if(est.state==='EMITIDO'){
     const monto = est.monto_real || est.monto;
