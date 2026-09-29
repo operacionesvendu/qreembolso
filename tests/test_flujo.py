@@ -429,6 +429,19 @@ def test_mcp_reconecta_si_la_sesion_vencio(monkeypatch):
     assert conexiones == [1]  # reconectó una vez, sin reinicio
 
 
+def test_config_publica_ventana(fake, monkeypatch):
+    monkeypatch.setattr(ms, "VENTANA_MIN", 60)
+    with TestClient(app_mod.app) as c:
+        assert c.get("/api/config").json()["ventana_min"] == 60
+
+
+def test_cobro_dentro_de_una_hora(fake, monkeypatch):
+    monkeypatch.setattr(ms, "VENTANA_MIN", 60)
+    fake.cobro(hace_s=45 * 60)   # pagó hace 45 minutos
+    cid = _reclamo(_device())
+    assert ms.intento_match(cid) == "EMITIDO"
+
+
 def test_ip_usa_proxy_de_confianza():
     class R:
         headers = {"X-Forwarded-For": "6.6.6.6, 203.0.113.9"}

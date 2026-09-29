@@ -221,7 +221,7 @@
       </ol>
       <div class="aviso">
         <svg width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
-        <span>Reclama apenas ocurra: encontramos pagos de los <b>últimos 10 minutos</b>.</span>
+        <span>Reclama apenas ocurra: encontramos pagos de <b id="txt-ventana">los últimos minutos</b>.</span>
       </div>
       <button class="btn primario" onclick="cargarProductos()">Empezar</button>
       <button class="btn suave" onclick="goIntro()">Volver</button>
@@ -345,6 +345,15 @@ let MAQUINA = {codigo:'', nombre:''};
 let CLAIM_ID = null;
 let pollTimer = null, relojTimer = null, relojInicio = 0;
 const MAX_ITEMS = 10;
+
+// Ventana de búsqueda configurada en el servidor (RECLAMO_VENTANA_MIN).
+function textoVentana(min){
+  if(min >= 60 && min % 60 === 0) return (min === 60 ? 'la última hora' : 'las últimas ' + (min/60) + ' horas');
+  return 'los últimos ' + min + ' minutos';
+}
+fetch('/api/config').then(r=>r.ok ? r.json() : null).then(c=>{
+  if(c && c.ventana_min){ const el = document.getElementById('txt-ventana'); if(el) el.textContent = textoVentana(c.ventana_min); }
+}).catch(()=>{});
 
 function goIntro(){
   CART={}; CLAIM_ID=null; clearInterval(pollTimer); clearInterval(relojTimer);
